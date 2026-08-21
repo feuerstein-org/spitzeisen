@@ -1,0 +1,9 @@
+{% set vendor_name = manifest.vendor | replace("_", " ") | replace("-", " ") | title -%}
+"""{{ vendor_name }} API client."""
+
+from {{ package }}.{{ folder }}._generated.client import {{ prefix }}{{ manifest.client_name }}Base
+
+# This file is created once by spitzeisen-gen and is safe to customize.
+
+class {{ prefix }}{{ manifest.client_name }}({{ prefix }}{{ manifest.client_name }}Base):
+    """Client for the {{ vendor_name }} API."""

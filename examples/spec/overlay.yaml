@@ -1,0 +1,60 @@
+overlay: 1.0.0
+info:
+  title: OpenWeather Current Weather schema constraints
+  version: 2.0.0
+actions:
+  # The HTML documentation lists fields but cannot express JSON Schema requiredness. Keep
+  # phenomenon-dependent objects optional while making the stable response core explicit.
+  - target: $.components.schemas.CurrentWeatherResponse
+    update:
+      required: [coord, weather, main, dt, timezone, id, name, cod]
+
+  - target: $.components.schemas.Coordinates
+    update:
+      required: [lon, lat]
+
+  - target: $.components.schemas.WeatherCondition
+    update:
+      required: [id, main, description, icon]
+
+  - target: $.components.schemas.WeatherMeasurements
+    update:
+      required: [temp, feels_like, pressure, humidity]
+
+  - target: $.components.schemas.Wind
+    update:
+      required: [speed, deg]
+
+  - target: $.components.schemas.PrecipitationVolume
+    update:
+      required: [1h]
+
+  - target: $.components.schemas.Clouds
+    update:
+      required: [all]
+
+  - target: $.components.schemas.SystemMetadata
+    update:
+      required: [country, sunrise, sunset]
+
+  # Geographic and percentage bounds are implicit in the prose descriptions but useful to
+  # generated validation, so the overlay makes those constraints machine-readable.
+  - target: $.components.schemas.Coordinates.properties.lat
+    update:
+      minimum: -90
+      maximum: 90
+
+  - target: $.components.schemas.Coordinates.properties.lon
+    update:
+      minimum: -180
+      maximum: 180
+
+  - target: $.components.schemas.WeatherMeasurements.properties.humidity
+    update:
+      minimum: 0
+      maximum: 100
+
+  - target: $.components.schemas.Clouds.properties.all
+    update:
+      minimum: 0
+      maximum: 100

@@ -1,0 +1,24 @@
+overlay: 1.0.0
+info:
+  title: massive-api corrections
+  version: 0.1.0
+actions:
+  - target: $.paths['/stocks/v1/splits'].get.responses['200'].content['application/json'].schema.properties.results.items
+    update:
+      title: Split
+      required: [ticker, execution_date, adjustment_type, split_from, split_to]
+  - target: $.paths['/stocks/v1/splits'].get.responses['200'].content['application/json'].schema.properties.results.items.properties.adjustment_type
+    update:
+      title: AdjustmentType
+      enum: [forward_split, reverse_split, stock_dividend]
+  - target: $.paths['/stocks/v1/dividends'].get.responses['200'].content['application/json'].schema.properties.results.items
+    update:
+      title: Dividend
+      required: [ticker, cash_amount, ex_dividend_date]
+  - target: $.paths['/stocks/v1/dividends'].get.responses['200'].content['application/json'].schema.properties.results.items.properties.distribution_type
+    update:
+      title: DistributionType
+  - target: $.paths['/v3/reference/tickers'].get.responses['200'].content['application/json'].schema.properties.results.items
+    update:
+      title: Ticker
+      required: [ticker, name, market, active]

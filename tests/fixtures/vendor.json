@@ -1,0 +1,1030 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "description": "The future of fintech.",
+  "title": "Polygon API",
+  "version": "1.0.0"
+ },
+ "servers": [
+  {
+   "description": "Massive Platform API",
+   "url": "https://api.massive.com"
+  },
+  {
+   "description": "Massive Platform API (Staging)",
+   "url": "https://api.staging.massive.com"
+  }
+ ],
+ "paths": {
+  "/stocks/v1/splits": {
+   "get": {
+    "description": "Contains historical stock split and reverse split events for US equities with historical adjustment factors for price normalization.",
+    "operationId": "get_stocks_v1_splits",
+    "parameters": [
+     {
+      "description": "Stock symbol for the company that executed the split",
+      "in": "query",
+      "name": "ticker",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter equal to any of the values. Multiple values can be specified by using a comma separated list.",
+      "in": "query",
+      "name": "ticker.any_of",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than the value.",
+      "in": "query",
+      "name": "ticker.gt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than or equal to the value.",
+      "in": "query",
+      "name": "ticker.gte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than the value.",
+      "in": "query",
+      "name": "ticker.lt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than or equal to the value.",
+      "in": "query",
+      "name": "ticker.lte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Date when the stock split takes effect. The adjustment is applied overnight. On the prior trading day, the post-market session is the last session that shows pre-split prices. On the execution date, all trading is already adjusted for the split. This includes the pre-market session. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "execution_date",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "execution_date.gt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than or equal to the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "execution_date.gte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "execution_date.lt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than or equal to the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "execution_date.lte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Classification of the share-change event. Possible values include: forward_split (share count increases), reverse_split (share count decreases), stock_dividend (shares issued as a dividend)",
+      "in": "query",
+      "name": "adjustment_type",
+      "schema": {
+       "enum": [
+        "forward_split",
+        "reverse_split",
+        "stock_dividend"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter equal to any of the values. Multiple values can be specified by using a comma separated list.",
+      "in": "query",
+      "name": "adjustment_type.any_of",
+      "schema": {
+       "enum": [
+        "forward_split",
+        "reverse_split",
+        "stock_dividend"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Limit the maximum number of results returned. Defaults to '100' if not specified. The maximum allowed limit is '5000'.",
+      "in": "query",
+      "name": "limit",
+      "schema": {
+       "default": 100,
+       "maximum": 5000,
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     {
+      "description": "A comma separated list of sort columns. For each column, append '.asc' or '.desc' to specify the sort direction. The sort column defaults to 'execution_date' if not specified. The sort order defaults to 'desc' if not specified.",
+      "in": "query",
+      "name": "sort",
+      "schema": {
+       "default": "execution_date.desc",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "example": {
+         "request_id": 1,
+         "results": [
+          {
+           "adjustment_type": "forward_split",
+           "execution_date": "2005-02-28",
+           "historical_adjustment_factor": 0.017857,
+           "id": "E90a77bdf742661741ed7c8fc086415f0457c2816c45899d73aaa88bdc8ff6025",
+           "split_from": 1,
+           "split_to": 2,
+           "ticker": "AAPL"
+          }
+         ],
+         "status": "OK"
+        },
+        "schema": {
+         "properties": {
+          "next_url": {
+           "description": "If present, this value can be used to fetch the next page.",
+           "type": "string"
+          },
+          "request_id": {
+           "description": "A request id assigned by the server.",
+           "type": "string"
+          },
+          "results": {
+           "description": "The results for this request.",
+           "items": {
+            "properties": {
+             "adjustment_type": {
+              "description": "Classification of the share-change event. Possible values include: forward_split (share count increases), reverse_split (share count decreases), stock_dividend (shares issued as a dividend)",
+              "type": "string"
+             },
+             "execution_date": {
+              "description": "Date when the stock split takes effect. The adjustment is applied overnight. On the prior trading day, the post-market session is the last session that shows pre-split prices. On the execution date, all trading is already adjusted for the split. This includes the pre-market session.",
+              "format": "date",
+              "type": "string"
+             },
+             "historical_adjustment_factor": {
+              "description": "Cumulative adjustment factor used to offset split effects on historical prices. To adjust a historical price for splits: for a price on date D, find the first split whose `execution_date` is after date D and multiply the unadjusted price by the `historical_adjustment_factor`.",
+              "format": "double",
+              "type": "number"
+             },
+             "id": {
+              "description": "Unique identifier for each stock split event",
+              "type": "string"
+             },
+             "split_from": {
+              "description": "Denominator of the split ratio (old shares)",
+              "format": "double",
+              "type": "number"
+             },
+             "split_to": {
+              "description": "Numerator of the split ratio (new shares)",
+              "format": "double",
+              "type": "number"
+             },
+             "ticker": {
+              "description": "Stock symbol for the company that executed the split",
+              "type": "string"
+             }
+            },
+            "required": [
+             "adjustment_type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          },
+          "status": {
+           "description": "The status of this request's response.",
+           "enum": [
+            "OK"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status",
+          "request_id",
+          "results"
+         ],
+         "type": "object"
+        }
+       }
+      },
+      "description": "A list of results."
+     },
+     "400": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "error": {
+           "description": "A message describing the source of the error.",
+           "type": "string"
+          },
+          "request_id": {
+           "description": "A request id assigned by the server.",
+           "type": "string"
+          },
+          "status": {
+           "description": "The status of this request's response.",
+           "enum": [
+            "ERROR"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status",
+          "request_id",
+          "error"
+         ],
+         "type": "object"
+        }
+       }
+      },
+      "description": "An error message."
+     }
+    },
+    "tags": [
+     "us_stocks_reference"
+    ]
+   }
+  },
+  "/stocks/v1/dividends": {
+   "get": {
+    "description": "Contains historical dividend payment records for US stocks with split-adjusted amounts and historical adjustment factors for price normalization.",
+    "operationId": "get_stocks_v1_dividends",
+    "parameters": [
+     {
+      "description": "Stock symbol for the company issuing the dividend",
+      "in": "query",
+      "name": "ticker",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter equal to any of the values. Multiple values can be specified by using a comma separated list.",
+      "in": "query",
+      "name": "ticker.any_of",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than the value.",
+      "in": "query",
+      "name": "ticker.gt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than or equal to the value.",
+      "in": "query",
+      "name": "ticker.gte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than the value.",
+      "in": "query",
+      "name": "ticker.lt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than or equal to the value.",
+      "in": "query",
+      "name": "ticker.lte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Date when the stock begins trading without the dividend value Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "ex_dividend_date",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "ex_dividend_date.gt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter greater than or equal to the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "ex_dividend_date.gte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "ex_dividend_date.lt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter less than or equal to the value. Value must be formatted 'yyyy-mm-dd'.",
+      "in": "query",
+      "name": "ex_dividend_date.lte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "How many times per year this dividend is expected to occur. A value of 0 means the distribution is non-recurring or irregular (e.g., special, supplemental, or a one-off dividend). Other possible values include 1 (annual), 2 (semi-annual), 3 (trimester), 4 (quarterly), 12 (monthly), 24 (bi-monthly), 52 (weekly), 104 (bi-weekly), and 365 (daily) depending on the issuer's declared or inferred payout cadence. Value must be an integer.",
+      "in": "query",
+      "name": "frequency",
+      "schema": {
+       "format": "int64",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Filter greater than the value. Value must be an integer.",
+      "in": "query",
+      "name": "frequency.gt",
+      "schema": {
+       "format": "int64",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Filter greater than or equal to the value. Value must be an integer.",
+      "in": "query",
+      "name": "frequency.gte",
+      "schema": {
+       "format": "int64",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Filter less than the value. Value must be an integer.",
+      "in": "query",
+      "name": "frequency.lt",
+      "schema": {
+       "format": "int64",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Filter less than or equal to the value. Value must be an integer.",
+      "in": "query",
+      "name": "frequency.lte",
+      "schema": {
+       "format": "int64",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Classification describing the nature of this dividend's recurrence pattern: recurring (paid on a regular schedule), special (one-time or commemorative), supplemental (extra beyond the regular schedule), irregular (unpredictable or non-recurring), unknown (cannot be classified from available data)",
+      "in": "query",
+      "name": "distribution_type",
+      "schema": {
+       "enum": [
+        "recurring",
+        "special",
+        "supplemental",
+        "irregular",
+        "unknown"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter equal to any of the values. Multiple values can be specified by using a comma separated list.",
+      "in": "query",
+      "name": "distribution_type.any_of",
+      "schema": {
+       "enum": [
+        "recurring",
+        "special",
+        "supplemental",
+        "irregular",
+        "unknown"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Limit the maximum number of results returned. Defaults to '100' if not specified. The maximum allowed limit is '5000'.",
+      "in": "query",
+      "name": "limit",
+      "schema": {
+       "default": 100,
+       "maximum": 5000,
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     {
+      "description": "A comma separated list of sort columns. For each column, append '.asc' or '.desc' to specify the sort direction. The sort column defaults to 'ticker' if not specified. The sort order defaults to 'asc' if not specified.",
+      "in": "query",
+      "name": "sort",
+      "schema": {
+       "default": "ticker.asc",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "example": {
+         "request_id": 1,
+         "results": [
+          {
+           "cash_amount": 0.26,
+           "currency": "USD",
+           "declaration_date": "2025-07-31",
+           "distribution_type": "recurring",
+           "ex_dividend_date": "2025-08-11",
+           "frequency": 4,
+           "historical_adjustment_factor": 0.997899,
+           "id": "Ed2c9da60abda1e3f0e99a43f6465863c137b671e1f5cd3f833d1fcb4f4eb27fe",
+           "pay_date": "2025-08-14",
+           "record_date": "2025-08-11",
+           "split_adjusted_cash_amount": 0.26,
+           "ticker": "AAPL"
+          }
+         ],
+         "status": "OK"
+        },
+        "schema": {
+         "properties": {
+          "next_url": {
+           "description": "If present, this value can be used to fetch the next page.",
+           "type": "string"
+          },
+          "request_id": {
+           "description": "A request id assigned by the server.",
+           "type": "string"
+          },
+          "results": {
+           "description": "The results for this request.",
+           "items": {
+            "properties": {
+             "cash_amount": {
+              "description": "Original dividend amount per share in the specified currency",
+              "format": "double",
+              "type": "number"
+             },
+             "currency": {
+              "description": "Currency code for the dividend payment (e.g., USD, CAD)",
+              "type": "string"
+             },
+             "declaration_date": {
+              "description": "Date when the company officially announced the dividend",
+              "format": "date",
+              "type": "string"
+             },
+             "distribution_type": {
+              "description": "Classification describing the nature of this dividend's recurrence pattern: recurring (paid on a regular schedule), special (one-time or commemorative), supplemental (extra beyond the regular schedule), irregular (unpredictable or non-recurring), unknown (cannot be classified from available data)",
+              "type": "string"
+             },
+             "ex_dividend_date": {
+              "description": "Date when the stock begins trading without the dividend value",
+              "format": "date",
+              "type": "string"
+             },
+             "frequency": {
+              "description": "How many times per year this dividend is expected to occur. A value of 0 means the distribution is non-recurring or irregular (e.g., special, supplemental, or a one-off dividend). Other possible values include 1 (annual), 2 (semi-annual), 3 (trimester), 4 (quarterly), 12 (monthly), 24 (bi-monthly), 52 (weekly), 104 (bi-weekly), and 365 (daily) depending on the issuer's declared or inferred payout cadence.",
+              "format": "int64",
+              "type": "integer"
+             },
+             "historical_adjustment_factor": {
+              "description": "Cumulative adjustment factor used to offset dividend effects on historical prices. To adjust a historical price for dividends: for a price on date D, find the first dividend whose `ex_dividend_date` is after date D and multiply the price by that dividend's `historical_adjustment_factor`.",
+              "format": "double",
+              "type": "number"
+             },
+             "id": {
+              "description": "Unique identifier for each dividend record",
+              "type": "string"
+             },
+             "pay_date": {
+              "description": "Date when the dividend payment is distributed to shareholders",
+              "format": "date",
+              "type": "string"
+             },
+             "record_date": {
+              "description": "Date when shareholders must be on record to be eligible for the dividend payment",
+              "format": "date",
+              "type": "string"
+             },
+             "split_adjusted_cash_amount": {
+              "description": "Dividend amount adjusted for stock splits that occurred after the dividend was paid, expressed on a current share basis",
+              "format": "double",
+              "type": "number"
+             },
+             "ticker": {
+              "description": "Stock symbol for the company issuing the dividend",
+              "type": "string"
+             }
+            },
+            "required": [
+             "distribution_type"
+            ],
+            "type": "object"
+           },
+           "type": "array"
+          },
+          "status": {
+           "description": "The status of this request's response.",
+           "enum": [
+            "OK"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status",
+          "request_id",
+          "results"
+         ],
+         "type": "object"
+        }
+       }
+      },
+      "description": "A list of results."
+     },
+     "400": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "properties": {
+          "error": {
+           "description": "A message describing the source of the error.",
+           "type": "string"
+          },
+          "request_id": {
+           "description": "A request id assigned by the server.",
+           "type": "string"
+          },
+          "status": {
+           "description": "The status of this request's response.",
+           "enum": [
+            "ERROR"
+           ],
+           "type": "string"
+          }
+         },
+         "required": [
+          "status",
+          "request_id",
+          "error"
+         ],
+         "type": "object"
+        }
+       }
+      },
+      "description": "An error message."
+     }
+    },
+    "tags": [
+     "us_stocks_reference"
+    ]
+   }
+  },
+  "/v3/reference/tickers": {
+   "get": {
+    "description": "Query all ticker symbols which are supported by Massive. This API currently includes Stocks/Equities, Indices, Forex, and Crypto.",
+    "operationId": "ListTickers",
+    "parameters": [
+     {
+      "description": "Specify a ticker symbol.\nDefaults to empty string which queries all tickers.",
+      "in": "query",
+      "name": "ticker",
+      "schema": {
+       "type": "string"
+      },
+      "x-polygon-filter-field": {
+       "range": true
+      }
+     },
+     {
+      "description": "Specify the type of the tickers. Find the types that we support via our [Ticker Types API](https://massive.com/docs/rest/stocks/tickers/ticker-types).\nDefaults to empty string which queries all types.",
+      "in": "query",
+      "name": "type",
+      "schema": {
+       "enum": [
+        "CS",
+        "ADRC",
+        "ADRP",
+        "ADRR",
+        "UNIT",
+        "RIGHT",
+        "PFD",
+        "FUND",
+        "SP",
+        "WARRANT",
+        "INDEX",
+        "ETF",
+        "ETN",
+        "OS",
+        "GDR",
+        "OTHER",
+        "NYRS",
+        "AGEN",
+        "EQLK",
+        "BOND",
+        "ADRW",
+        "BASKET",
+        "LT"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Filter by market type. By default all markets are included.",
+      "in": "query",
+      "name": "market",
+      "schema": {
+       "enum": [
+        "stocks",
+        "crypto",
+        "fx",
+        "otc",
+        "indices"
+       ],
+       "type": "string"
+      }
+     },
+     {
+      "description": "Specify the asset's primary exchange Market Identifier Code (MIC) according to [ISO 10383](https://www.iso20022.org/market-identifier-codes).\nDefaults to empty string which queries all exchanges.",
+      "in": "query",
+      "name": "exchange",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Specify the CUSIP code of the asset you want to search for. Find more information about CUSIP codes [at their website](https://www.cusip.com/identifiers.html#/CUSIP).\nDefaults to empty string which queries all CUSIPs.\n\nNote: Although you can query by CUSIP, due to legal reasons we do not return the CUSIP in the response.",
+      "in": "query",
+      "name": "cusip",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Specify the CIK of the asset you want to search for. Find more information about CIK codes [at their website](https://www.sec.gov/edgar/searchedgar/cik.htm).\nDefaults to empty string which queries all CIKs.",
+      "in": "query",
+      "name": "cik",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Specify a point in time to retrieve tickers available on that date.\nDefaults to the most recent available date.",
+      "in": "query",
+      "name": "date",
+      "schema": {
+       "format": "date",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Search for terms within the ticker and/or company name.",
+      "in": "query",
+      "name": "search",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Specify if the tickers returned should be actively traded on the queried date. Default is true.",
+      "example": true,
+      "in": "query",
+      "name": "active",
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     {
+      "description": "Range by ticker.",
+      "in": "query",
+      "name": "ticker.gte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Range by ticker.",
+      "in": "query",
+      "name": "ticker.gt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Range by ticker.",
+      "in": "query",
+      "name": "ticker.lte",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Range by ticker.",
+      "in": "query",
+      "name": "ticker.lt",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Order results based on the `sort` field.",
+      "in": "query",
+      "name": "order",
+      "schema": {
+       "enum": [
+        "asc",
+        "desc"
+       ],
+       "example": "asc",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Limit the number of results returned, default is 100 and max is 1000.",
+      "in": "query",
+      "name": "limit",
+      "schema": {
+       "default": 100,
+       "example": 100,
+       "maximum": 1000,
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Sort field used for ordering.",
+      "in": "query",
+      "name": "sort",
+      "schema": {
+       "default": "ticker",
+       "enum": [
+        "ticker",
+        "name",
+        "market",
+        "locale",
+        "primary_exchange",
+        "type",
+        "currency_symbol",
+        "currency_name",
+        "base_currency_symbol",
+        "base_currency_name",
+        "cik",
+        "composite_figi",
+        "share_class_figi",
+        "last_updated_utc",
+        "delisted_utc"
+       ],
+       "example": "ticker",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "example": {
+         "count": 1,
+         "next_url": "https://api.massive.com/v3/reference/tickers?cursor=YWN0aXZlPXRydWUmZGF0ZT0yMDIxLTA0LTI1JmxpbWl0PTEmb3JkZXI9YXNjJnBhZ2VfbWFya2VyPUElN0M5YWRjMjY0ZTgyM2E1ZjBiOGUyNDc5YmZiOGE1YmYwNDVkYzU0YjgwMDcyMWE2YmI1ZjBjMjQwMjU4MjFmNGZiJnNvcnQ9dGlja2Vy",
+         "request_id": "e70013d92930de90e089dc8fa098888e",
+         "results": [
+          {
+           "active": true,
+           "cik": "0001090872",
+           "composite_figi": "BBG000BWQYZ5",
+           "currency_name": "usd",
+           "last_updated_utc": "2021-04-25T00:00:00Z",
+           "locale": "us",
+           "market": "stocks",
+           "name": "Agilent Technologies Inc.",
+           "primary_exchange": "XNYS",
+           "share_class_figi": "BBG001SCTQY4",
+           "ticker": "A",
+           "type": "CS"
+          }
+         ],
+         "status": "OK"
+        },
+        "schema": {
+         "properties": {
+          "count": {
+           "description": "The total number of results for this request.",
+           "type": "integer"
+          },
+          "next_url": {
+           "description": "If present, this value can be used to fetch the next page of data.",
+           "type": "string"
+          },
+          "request_id": {
+           "description": "A request id assigned by the server.",
+           "type": "string"
+          },
+          "results": {
+           "description": "An array of tickers that match your query.\n\nNote: Although you can query by CUSIP, due to legal reasons we do not return the CUSIP in the response.",
+           "items": {
+            "properties": {
+             "active": {
+              "description": "Whether or not the asset is actively traded. False means the asset has been delisted.",
+              "type": "boolean"
+             },
+             "base_currency_name": {
+              "description": "The name of the currency that this asset is priced against.",
+              "type": "string"
+             },
+             "base_currency_symbol": {
+              "description": "The ISO 4217 code of the currency that this asset is priced against.",
+              "type": "string"
+             },
+             "cik": {
+              "description": "The CIK number for this ticker. Find more information [here](https://en.wikipedia.org/wiki/Central_Index_Key).",
+              "type": "string"
+             },
+             "composite_figi": {
+              "description": "The composite OpenFIGI number for this ticker. Find more information [here](https://www.openfigi.com/about/figi)",
+              "type": "string"
+             },
+             "currency_name": {
+              "description": "The name of the currency that this asset is traded with.",
+              "type": "string"
+             },
+             "currency_symbol": {
+              "description": "The ISO 4217 code of the currency that this asset is traded with.",
+              "type": "string"
+             },
+             "delisted_utc": {
+              "description": "The last date that the asset was traded.",
+              "format": "date-time",
+              "type": "string"
+             },
+             "last_updated_utc": {
+              "description": "The information is accurate up to this time.",
+              "format": "date-time",
+              "type": "string"
+             },
+             "locale": {
+              "description": "The locale of the asset.",
+              "enum": [
+               "us",
+               "global"
+              ],
+              "type": "string"
+             },
+             "market": {
+              "description": "The market type of the asset.",
+              "enum": [
+               "stocks",
+               "crypto",
+               "fx",
+               "otc",
+               "indices"
+              ],
+              "type": "string"
+             },
+             "name": {
+              "description": "The name of the asset. For stocks/equities this will be the companies registered name. For crypto/fx this will be the name of the currency or coin pair.",
+              "type": "string"
+             },
+             "primary_exchange": {
+              "description": "The ISO code of the primary listing exchange for this asset.",
+              "type": "string"
+             },
+             "share_class_figi": {
+              "description": "The share Class OpenFIGI number for this ticker. Find more information [here](https://www.openfigi.com/about/figi)",
+              "type": "string"
+             },
+             "ticker": {
+              "description": "The exchange symbol that this item is traded under.",
+              "type": "string"
+             },
+             "type": {
+              "description": "The type of the asset. Find the types that we support via our [Ticker Types API](https://massive.com/docs/rest/stocks/tickers/ticker-types).",
+              "type": "string"
+             }
+            },
+            "required": [
+             "ticker",
+             "name",
+             "market",
+             "locale"
+            ],
+            "type": "object",
+            "x-polygon-go-type": {
+             "name": "ReferenceTicker",
+             "path": "github.com/polygon-io/go-lib-models/v2/globals"
+            }
+           },
+           "type": "array"
+          },
+          "status": {
+           "description": "The status of this request's response.",
+           "type": "string"
+          }
+         },
+         "type": "object"
+        }
+       },
+       "text/csv": {
+        "example": "ticker,name,market,locale,primary_exchange,type,active,currency_name,cik,composite_figi,share_class_figi,last_updated_utc\nA,Agilent Technologies Inc.,stocks,us,XNYS,CS,true,usd,0001090872,BBG000BWQYZ5,BBG001SCTQY4,2021-04-25T00:00:00Z\n",
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "description": "Reference Tickers."
+     },
+     "401": {
+      "description": "Unauthorized - Check our API Key and account status"
+     }
+    },
+    "summary": "Tickers",
+    "tags": [
+     "reference:tickers:list"
+    ],
+    "x-polygon-entitlement-data-type": {
+     "description": "Reference data",
+     "name": "reference"
+    },
+    "x-polygon-paginate": {
+     "limit": {
+      "default": 100,
+      "max": 1000
+     },
+     "sort": {
+      "default": "ticker",
+      "enum": [
+       "ticker",
+       "name",
+       "market",
+       "locale",
+       "primary_exchange",
+       "type",
+       "currency_symbol",
+       "currency_name",
+       "base_currency_symbol",
+       "base_currency_name",
+       "cik",
+       "composite_figi",
+       "share_class_figi",
+       "last_updated_utc",
+       "delisted_utc"
+      ]
+     }
+    }
+   }
+  }
+ }
+}

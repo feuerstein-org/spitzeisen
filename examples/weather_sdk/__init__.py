@@ -1,0 +1,11 @@
+"""Public exports for the generated example weather SDK."""
+
+from weather_sdk._async.client import AsyncWeatherApi
+from weather_sdk._sync.client import SyncWeatherApi
+from weather_sdk.models import CurrentWeatherResponse
+
+__all__ = (
+    "AsyncWeatherApi",
+    "CurrentWeatherResponse",
+    "SyncWeatherApi",
+)

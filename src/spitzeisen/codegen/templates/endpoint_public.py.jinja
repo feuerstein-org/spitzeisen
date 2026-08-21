@@ -1,0 +1,9 @@
+{% set endpoint_name = ep.key | replace("_", " ") -%}
+"""{{ endpoint_name | title }} API."""
+
+from {{ package }}.{{ folder }}._generated.{{ ep.key }} import {{ prefix }}{{ ep.class_name }}Base
+
+# This file is created once by spitzeisen-gen and is safe to customize.
+
+class {{ prefix }}{{ ep.class_name }}({{ prefix }}{{ ep.class_name }}Base):
+    """{{ ep.summary or "Access the " ~ endpoint_name ~ " API." }}"""

@@ -1,0 +1,12 @@
+"""
+Public {{ ep.model }} response model.
+
+Created once by spitzeisen-gen. Add model-specific validators and behaviour here; regeneration
+preserves this file and refreshes only the schema-derived base in `models._generated`.
+"""
+
+from {{ package }}.models._generated import {{ ep.model }} as Generated{{ ep.model }}
+
+
+class {{ ep.model }}(Generated{{ ep.model }}):
+    """Public extension point for the {{ ep.key | replace("_", " ") }} response model."""

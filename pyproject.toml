@@ -126,6 +126,8 @@ lint.unfixable = []
     "INP001",   # Require packages to have a __init__.py file
     "T201",     # Disallow print
 ]
+# datamodel-code-generator owns these classes, which intentionally omit project docstrings.
+"examples/weather_sdk/models/_generated.py" = ["D"]
 
 [tool.ruff.lint.pylint]
 max-args = 11   # Max arguments for functions - default 5
@@ -133,6 +135,7 @@ max-args = 11   # Max arguments for functions - default 5
 [tool.pyright]
 pythonVersion = "3.14"
 pythonPlatform = "Linux"
+extraPaths = ["examples"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"

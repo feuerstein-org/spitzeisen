@@ -17,6 +17,22 @@ run = "uv run python build_sync.py"
 description = "Fail if _sync/ is stale relative to _async/"
 run = "uv run python build_sync.py --check"
 
+[tasks.codegen]
+description = "Regenerate the complete example weather SDK"
+run = [
+    "uv run spitzeisen-gen models --spec-dir examples/spec --package-root examples/weather_sdk",
+    "uv run spitzeisen-gen endpoints --spec-dir examples/spec --package-root examples/weather_sdk",
+]
+
+[tasks.check-codegen]
+description = "Fail if the example weather SDK endpoint output is stale"
+run = "uv run spitzeisen-gen check --spec-dir examples/spec --package-root examples/weather_sdk"
+
+[tasks.demo-example]
+description = "Run the generated weather SDK against an offline fake transport"
+depends = ["codegen"]
+run = "uv run python examples/demo.py"
+
 [tasks.pre-commit]
 description = "Run pre-commit hooks on all files"
 depends = ["lint-fix"]
