@@ -3,6 +3,8 @@ name = "spitzeisen"
 version = "0.1.0"
 description = "An async/sync client framework to generate SDKs for REST APIs"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 requires-python = ">=3.12"
 authors = [{ name = "dodofarm", email = "ea01052002@gmail.com" }]
 keywords = ["api", "client", "rest", "rate-limiting", "openapi", "async"]
@@ -28,6 +30,8 @@ codegen = [
     "jinja2>=3.1.0",
     "ruff>=0.14",
     "datamodel-code-generator>=0.28",
+    "jsonschema-path>=0.5.0",
+    "openapi-spec-validator>=0.9.0",
     "oas-patch>=0.6.0",
     "pyyaml>=6.0",
     "click>=8.1",
@@ -57,6 +61,9 @@ dev = [
 requires = ["uv_build>=0.8.5,<0.9.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+source-include = ["docs/**"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
@@ -75,7 +82,7 @@ exclude_lines = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py314"
+target-version = "py312"
 lint.select = ["ALL"]
 lint.ignore = [
     "ANN401",   # Disallow typing.Any
@@ -133,7 +140,7 @@ lint.unfixable = []
 max-args = 11   # Max arguments for functions - default 5
 
 [tool.pyright]
-pythonVersion = "3.14"
+pythonVersion = "3.12"
 pythonPlatform = "Linux"
 extraPaths = ["examples"]
 venvPath = "."

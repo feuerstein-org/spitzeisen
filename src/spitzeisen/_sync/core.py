@@ -10,6 +10,8 @@ Documentation written neutrally in regards to async/sync since unasync generates
 the sync counterpart.
 """
 
+from __future__ import annotations
+
 import functools
 import time
 from collections.abc import Iterator, Mapping

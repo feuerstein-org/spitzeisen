@@ -113,10 +113,21 @@ Each endpoint has one scalar cost. steindamm's buckets satisfy the protocol with
 
 ## Code generation (optional)
 
-`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`, which builds models and endpoint
-modules from an OpenAPI document plus a small manifest describing what OpenAPI cannot: what each
-call costs, how it paginates, the largest page it will serve. The OpenAPI document is optional —
-the manifest alone is enough, which matters for the many APIs that publish no spec.
+`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`, which compiles OpenAPI 3.0, 3.1, or 3.2
+plus a small manifest describing what OpenAPI cannot: what each call costs, how it paginates, and
+the public SDK names. A manifest-only API can generate the same endpoint/client surfaces with
+`declared_params`; set `generate_model: false` and provide its response model by hand.
+
+Generation is one transaction, including Pydantic models and both client surfaces:
+
+```bash
+spitzeisen-gen generate --spec-dir spec --package-root src/example_api
+spitzeisen-gen check --spec-dir spec --package-root src/example_api
+```
+
+`check` is suitable for CI and compares models as well as endpoints. Overlay and selected-spec
+intermediates are temporary rather than committed sources of truth. The compiler architecture and
+file-by-file responsibilities are documented in [docs/codegen-architecture.md](docs/codegen-architecture.md).
 
 Endpoint generation separates replaceable implementation from public extension points. Given an
 endpoint named `splits`, it produces this layout for each surface:
@@ -187,7 +198,7 @@ Root response names such as `Split` resolve to their client-owned public subclas
 names resolve to the exact generated classes used by those responses.
 
 A client needing shared behaviour can still provide a base derived from `SpitzeisenModel` and
-select it with `spitzeisen-gen models --base-class my_client.model_base.ClientModel`. Set
+select it with `spitzeisen-gen generate --base-class my_client.model_base.ClientModel`. Set
 `generate_model: false` for an entirely handwritten response model; define it under the public
 `models/<endpoint>.py` module expected by that endpoint.
 

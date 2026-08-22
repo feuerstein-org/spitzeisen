@@ -8,6 +8,8 @@ Documentation written neutrally in regards to async/sync since unasync generates
 the sync counterpart.
 """
 
+from __future__ import annotations
+
 import asyncio
 import functools
 from collections.abc import AsyncIterator, Mapping

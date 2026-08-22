@@ -6,6 +6,8 @@ Every test here runs twice: once against the hand-written awaitable core and onc
 mis-transform fails a test rather than shipping.
 """
 
+from __future__ import annotations
+
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, cast
 

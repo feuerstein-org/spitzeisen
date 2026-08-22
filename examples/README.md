@@ -28,15 +28,15 @@ mise run check-codegen
 mise run demo-example
 ```
 
-`codegen` applies the overlay, generates models, and generates both endpoint surfaces.
-The intermediate `spec/patched.json` and `spec/pruned.json` files are intentionally ignored;
-they make the stages inspectable locally without becoming sources of truth.
+`codegen` validates the vendor input, applies the overlay temporarily, compiles endpoint policy,
+generates models, and writes both endpoint surfaces in one transaction. No patched or pruned
+intermediate is kept as a second source of truth.
 
 Files named or nested under `_generated` are replaced on every run. Public model, endpoint, and
 client modules are created only when absent, so adding custom SDK behaviour there is safe.
 `models/current_weather.py` demonstrates this with a validator requiring a successful observation
-to contain at least one weather condition. The check task verifies the replaceable endpoint/client
-bases and the presence of every public extension module.
+to contain at least one weather condition. The check task verifies generated models, replaceable
+endpoint/client bases, public exports, and the presence of every public extension module.
 
 Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
 remain wire-only, and no repeated `model_config` block is emitted into each class.

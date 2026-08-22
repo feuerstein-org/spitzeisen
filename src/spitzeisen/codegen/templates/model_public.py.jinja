@@ -9,4 +9,4 @@ from {{ package }}.models._generated import {{ ep.model }} as Generated{{ ep.mod
 
 
 class {{ ep.model }}(Generated{{ ep.model }}):
-    """Public extension point for the {{ ep.key | replace("_", " ") }} response model."""
+    """A {{ ep.key | replace("_", " ") }} response returned by the API."""

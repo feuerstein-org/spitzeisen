@@ -9,7 +9,3 @@ coverage.xml
 
 __pycache__/
 *.py[cod]
-
-# Inspectable intermediates produced by the generated SDK example.
-examples/spec/patched.json
-examples/spec/pruned.json

@@ -20,6 +20,10 @@ run = [
 description = "Fail if the committed _sync tree is stale (CI only)"
 run = "uv run python build_sync.py --check"
 
+[tasks.check-codegen-ci]
+description = "Fail if the generated example SDK is stale (CI only)"
+run = "uv run spitzeisen-gen check --spec-dir examples/spec --package-root examples/weather_sdk"
+
 [tasks.pre-commit-ci]
 description = "Run pre-commit hooks (CI only)"
 run = "uv run pre-commit run --all-files"

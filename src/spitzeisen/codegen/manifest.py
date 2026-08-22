@@ -15,10 +15,13 @@ Rate limits appear in no OpenAPI document, so the manifest records the scalar co
 endpoint. The client config owns the actual allowance, which may only be known at runtime.
 """
 
+import ast
 import keyword
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from spitzeisen.codegen.ir import HTTPMethod
 
 Shape = Literal["collection", "single"]
 # What a not-found response means for this endpoint. "raise" is the default because a 404 is
@@ -97,6 +100,18 @@ class Param(BaseModel):
         if self.required and self.default is not None:
             msg = "a required parameter cannot also declare a default"
             raise ValueError(msg)
+        if self.literal and (not self.literal.isidentifier() or keyword.iskeyword(self.literal)):
+            msg = "`literal` must be a valid Python identifier imported from the client models module"
+            raise ValueError(msg)
+        if self.default is not None:
+            try:
+                ast.literal_eval(self.default)
+            except (SyntaxError, ValueError) as exc:
+                msg = "`default` must be a Python literal such as None, 10, 'value', or []"
+                raise ValueError(msg) from exc
+        if self.type is not None and not _is_annotation(self.type):
+            msg = "`type` must be a Python annotation, not an arbitrary source expression"
+            raise ValueError(msg)
         return self
 
 
@@ -105,7 +120,11 @@ class Endpoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    path: str = Field(min_length=1)
+    # `operation_id` is the most stable selector when a vendor publishes one. `path` and
+    # `method` remain an explicit fallback and make manifest/spec drift fail compilation.
+    operation_id: str | None = Field(default=None, min_length=1)
+    path: str = Field(min_length=1, pattern=r"^/")
+    method: HTTPMethod = HTTPMethod.GET
     method_name: str = Field(min_length=1)
     model: str = Field(min_length=1)
     summary: str = ""
@@ -126,7 +145,7 @@ class Endpoint(BaseModel):
     # Path placeholders, mapped to the argument name callers use: {"id": "ticker_id"}.
     path_params: dict[str, str] = Field(default_factory=dict[str, str])
 
-    cost: float = 1.0
+    cost: float = Field(default=1.0, gt=0)
     pagination: PaginationStyle = "none"
     results_key: str | None = None
     # The wire name is explicit because OpenAPI does not identify pagination parameters:
@@ -179,6 +198,19 @@ class Endpoint(BaseModel):
         if self.max_page_size is not None and self.page_size_param is None:
             msg = "`max_page_size` requires `page_size_param` naming its query parameter"
             raise ValueError(msg)
+        if self.shape == "single" and self.pagination != "none":
+            msg = "shape='single' cannot be combined with collection pagination"
+            raise ValueError(msg)
+        if self.shape == "single" and self.page_size_param is not None:
+            msg = "shape='single' cannot declare a page-size parameter"
+            raise ValueError(msg)
+        if self.shape == "single" and self.sort_style != "none":
+            msg = "shape='single' cannot declare collection sorting controls"
+            raise ValueError(msg)
+        for field_name, value in (("method_name", self.method_name), ("model", self.model)):
+            if not value.isidentifier() or keyword.iskeyword(value):
+                msg = f"`{field_name}` must be a valid Python identifier"
+                raise ValueError(msg)
         self._check_sorting_settings()
         return self
 
@@ -242,12 +274,33 @@ class Manifest(BaseModel):
     package: str = Field(min_length=1)
     client_name: str = Field(min_length=1)
 
-    endpoints: dict[str, Endpoint]
+    endpoints: dict[str, Endpoint] = Field(min_length=1)
+
+    @field_validator("package")
+    @classmethod
+    def check_package_name(cls, value: str) -> str:
+        """Require an importable dotted package name."""
+        if not all(part.isidentifier() and not keyword.iskeyword(part) for part in value.split(".")):
+            msg = "`package` must be an importable dotted Python name"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("client_name")
+    @classmethod
+    def check_client_name(cls, value: str) -> str:
+        """Require a legal generated client class name."""
+        if not value.isidentifier() or keyword.iskeyword(value):
+            msg = "`client_name` must be a valid Python identifier"
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def wire_endpoint_keys(self) -> Self:
         """Stamp each endpoint with its manifest key."""
         for key, endpoint in self.endpoints.items():
+            if not key.isidentifier() or keyword.iskeyword(key):
+                msg = f"endpoint key {key!r} must be a valid Python identifier"
+                raise ValueError(msg)
             endpoint.key = key
         return self
 
@@ -259,23 +312,25 @@ class Manifest(BaseModel):
         """Every endpoint's custom field types, merged for the model generator."""
         return {key: value for ep in self.endpoints.values() for key, value in ep.type_overrides.items()}
 
-    def resolve(self, spec: dict[str, Any] | None) -> None:
-        """
-        Check every endpoint against an OpenAPI document, when one is supplied.
 
-        Failing loudly here is the point: if the vendor moves or renames a path, generation
-        stops rather than quietly emitting a client for an endpoint that no longer exists.
-        """
-        if spec is None:
-            return
-        paths = spec.get("paths", {})
-        for key, endpoint in self.endpoints.items():
-            if endpoint.path not in paths:
-                msg = (
-                    f"endpoint {key!r} declares path {endpoint.path!r}, which is not in the "
-                    f"OpenAPI document. Did the vendor move it?"
-                )
-                raise KeyError(msg)
-            if "get" not in paths[endpoint.path]:
-                msg = f"endpoint {key!r} declares path {endpoint.path!r}, which has no GET operation"
-                raise KeyError(msg)
+def _is_annotation(source: str) -> bool:
+    """Accept declarative annotation syntax while rejecting calls and executable expressions."""
+    try:
+        expression = ast.parse(source, mode="eval")
+    except SyntaxError:
+        return False
+    allowed = (
+        ast.Expression,
+        ast.Name,
+        ast.Load,
+        ast.Attribute,
+        ast.Subscript,
+        ast.BinOp,
+        ast.BitOr,
+        ast.Constant,
+        ast.Tuple,
+        ast.List,
+        ast.UnaryOp,
+        ast.USub,
+    )
+    return all(isinstance(node, allowed) for node in ast.walk(expression))

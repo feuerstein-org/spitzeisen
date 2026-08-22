@@ -12,6 +12,8 @@ is never overwritten. Aggregate client wiring follows the same generated-base/pu
 split, so adding an endpoint refreshes the wiring without erasing hand-written behaviour.
 """
 
+from __future__ import annotations
+
 import ast
 import keyword
 import subprocess
@@ -22,7 +24,9 @@ from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from spitzeisen.codegen import params as param_tools
+from spitzeisen.codegen.document import OpenAPIDocument
+from spitzeisen.codegen.lower import lower_document
+from spitzeisen.codegen.policy import ClientPlan, EndpointPlan, ParameterPlan, compile_manifest
 
 if TYPE_CHECKING:
     from spitzeisen.codegen.manifest import Endpoint, Manifest
@@ -34,15 +38,6 @@ TEMPLATES = Path(__file__).parent / "templates"
 PAGINATION_CLASSES = {
     "none": "NoPagination",
     "page_number": "PageNumber",
-}
-
-# Coercion helpers a generated module imports only if its parameters actually use them.
-HELPER_FOR_STYLE = {
-    "coerce_date(": "coerce_date",
-    "coerce_choices(": "coerce_choices",
-    "coerce_choice(": "coerce_choice",
-    "coerce_sort(": "coerce_sort",
-    "require_value(": "require_value",
 }
 
 ARG_INDENT = " " * 12
@@ -65,7 +60,7 @@ def formatted_module(path: Path, source: str, *, create_once: bool = False) -> G
     return GeneratedModule(path, format_python(source, str(path)), create_once=create_once)
 
 
-def prune_spec(spec: dict[str, Any], manifest: Manifest) -> dict[str, Any]:
+def prune_spec(spec: dict[str, Any], manifest: Manifest | ClientPlan) -> dict[str, Any]:
     """
     Narrow a vendor document to the paths a manifest actually implements.
 
@@ -73,7 +68,8 @@ def prune_spec(spec: dict[str, Any], manifest: Manifest) -> dict[str, Any]:
     wraps, and generating models for all of them produces thousands of lines nobody
     imports, plus name collisions when two unrelated endpoints want the same schema name.
     """
-    wanted = {endpoint.path for endpoint in manifest.endpoints.values() if endpoint.generate_model}
+    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
+    wanted = {endpoint.path for endpoint in endpoints if endpoint.generate_model}
     return {
         **spec,
         "paths": {path: item for path, item in spec.get("paths", {}).items() if path in wanted},
@@ -109,7 +105,7 @@ def wrap_arg(description: str, name: str) -> str:
     )
 
 
-def render_path_kwargs(path_params: list[param_tools.ResolvedParam]) -> str:
+def render_path_kwargs(path_params: tuple[ParameterPlan, ...]) -> str:
     """
     Render path values as keyword arguments to the request helper.
 
@@ -143,151 +139,96 @@ def environment() -> Environment:
     return env
 
 
-def helpers_used(rendered_calls: list[str], model_imports: list[str]) -> list[str]:
-    """
-    Which framework helpers a module actually calls, so imports stay honest.
-
-    Names the client already exports are left out: a manifest is free to point `literal`
-    at its own type, and importing the same name from the framework would shadow it.
-    """
-    joined = " ".join(rendered_calls)
-    found = {helper for call, helper in HELPER_FOR_STYLE.items() if call in joined}
-    always = {
-        "build_header_params",
-        "NoPagination",
-        "serialize_query_param",
-    }
-    return sorted((found | always) - set(model_imports))
-
-
 def render_endpoint(
-    manifest: Manifest,
-    endpoint: Endpoint,
-    operation: dict[str, Any] | None,
+    client: ClientPlan,
+    endpoint: EndpointPlan,
     *,
     is_async: bool,
 ) -> str:
     """Render one endpoint module for one surface."""
-    resolved = param_tools.resolve(endpoint, operation)
-    query_params = [param for param in resolved if param.location == "query"]
-    header_params = [param for param in resolved if param.location == "header"]
-    path_params = param_tools.resolve_path_params(endpoint, operation)
-    example_args = [param.name for param in path_params]
-    example_args.extend(param.name for param in resolved if param.required)
-    sorting = param_tools.sorting(endpoint, operation)
-    page_size = param_tools.page_size(endpoint, operation)
-
-    # A parameter shaped as a choice validates against a Literal that lives beside the
-    # models, so it has to be imported too — not just the response model.
-    borrowed = {
-        name
-        for name in (
-            endpoint.sort_literal,
-            endpoint.order_literal,
-            *(param.literal for param in endpoint.params.values()),
-            *(param.literal for param in endpoint.declared_params.values()),
-        )
-        if name
-    }
-    model_imports = sorted(borrowed)
-    coerce_function_imports = sorted(
-        {
-            param.coerce_function
-            for param in (*endpoint.params.values(), *endpoint.declared_params.values())
-            if param.coerce_function
-        }
-    )
-
-    # Path values are coerced too, so their helpers count towards the imports.
-    calls = [param.coercion for param in (*resolved, *path_params)]
-    calls.extend("require_value(" for param in resolved if param.required and param.location == "header")
-    if sorting:
-        calls.extend((sorting.sort.coercion, sorting.order.coercion))
-    if sorting and sorting.style == "suffix":
-        calls.append("coerce_sort(")
     template = "endpoint.py.jinja" if endpoint.shape == "collection" else "endpoint_single.py.jinja"
     return (
         environment()
         .get_template(template)
         .render(
             ep=endpoint,
-            params=resolved,
-            query_params=query_params,
-            header_params=header_params,
-            path_params=path_params,
-            example_args=example_args,
-            path_kwargs=render_path_kwargs(path_params),
+            params=endpoint.params,
+            query_params=endpoint.query_params,
+            header_params=endpoint.header_params,
+            path_params=endpoint.path_params,
+            example_args=endpoint.example_args,
+            path_kwargs=render_path_kwargs(endpoint.path_params),
             cost=endpoint.cost,
-            sorting=sorting,
-            page_size=page_size,
+            sorting=endpoint.sorting,
+            page_size=endpoint.page_size,
             pagination_class=PAGINATION_CLASSES[endpoint.pagination],
-            helpers=helpers_used(calls, model_imports),
+            helpers=endpoint.helpers,
             # Whether an absent resource is a return value or an exception. Resolved here so
             # the policy never reaches runtime: it picks which core helper to call, and
             # `_request` keeps its unconditional "a body, or an exception" contract.
             optional=endpoint.not_found == "empty",
             base_class="AsyncSpitzeisenApi" if is_async else "SyncSpitzeisenApi",
-            model_imports=model_imports,
-            model_module=f"{manifest.package}.models.{endpoint.key}",
-            coerce_function_imports=coerce_function_imports,
-            package=manifest.package,
-            client_name=manifest.client_name,
+            model_imports=endpoint.model_imports,
+            model_module=f"{client.package}.models.{endpoint.key}",
+            coerce_function_imports=endpoint.coerce_function_imports,
+            package=client.package,
+            client_name=client.client_name,
             is_async=is_async,
         )
     )
 
 
-def render_public_endpoint(manifest: Manifest, endpoint: Endpoint, *, is_async: bool) -> str:
+def render_public_endpoint(client: ClientPlan, endpoint: EndpointPlan, *, is_async: bool) -> str:
     """Render the create-once public subclass for one generated endpoint base."""
     return (
         environment()
         .get_template("endpoint_public.py.jinja")
         .render(
             ep=endpoint,
-            package=manifest.package,
+            package=client.package,
             prefix="Async" if is_async else "Sync",
             folder="_async" if is_async else "_sync",
         )
     )
 
 
-def render_client(manifest: Manifest, *, is_async: bool) -> str:
+def render_client(client: ClientPlan, *, is_async: bool) -> str:
     """Render the regenerated aggregate client base for one surface."""
     return (
         environment()
         .get_template("client.py.jinja")
         .render(
-            manifest=manifest,
+            client=client,
             prefix="Async" if is_async else "Sync",
-            surface="awaitable" if is_async else "blocking",
+            surface="asynchronous" if is_async else "synchronous",
             folder="_async" if is_async else "_sync",
             is_async=is_async,
         )
     )
 
 
-def render_public_client(manifest: Manifest, *, is_async: bool) -> str:
+def render_public_client(client: ClientPlan, *, is_async: bool) -> str:
     """Render the create-once public subclass for one generated aggregate client base."""
     return (
         environment()
         .get_template("client_public.py.jinja")
         .render(
-            manifest=manifest,
-            package=manifest.package,
+            client=client,
+            package=client.package,
             prefix="Async" if is_async else "Sync",
             folder="_async" if is_async else "_sync",
         )
     )
 
 
-def render_public_model(manifest: Manifest, endpoint: Endpoint) -> str:
+def render_public_model(package: str, endpoint: EndpointPlan | Endpoint) -> str:
     """Render one create-once public response-model subclass."""
     return (
         environment()
         .get_template("model_public.py.jinja")
         .render(
             ep=endpoint,
-            package=manifest.package,
+            package=package,
         )
     )
 
@@ -298,11 +239,13 @@ def generated_model_names(source: str) -> list[str]:
     return [node.name for node in tree.body if isinstance(node, ast.ClassDef) and not node.name.startswith("_")]
 
 
-def render_model_exports(manifest: Manifest, model_names: list[str]) -> str:
+def render_model_exports(manifest: Manifest | ClientPlan, model_names: list[str]) -> str:
     """Render the regenerated public facade for generated and extended schema models."""
+    package = manifest.package
+    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
     public_modules = {
         endpoint.model: endpoint.key
-        for endpoint in manifest.endpoints.values()
+        for endpoint in endpoints
         if endpoint.generate_model and endpoint.model in model_names
     }
     generated_names = sorted(name for name in model_names if name not in public_modules)
@@ -311,7 +254,7 @@ def render_model_exports(manifest: Manifest, model_names: list[str]) -> str:
         environment()
         .get_template("model_exports.py.jinja")
         .render(
-            package=manifest.package,
+            package=package,
             generated_names=generated_names,
             public_models=public_models,
             exported_names=sorted(model_names),
@@ -319,7 +262,7 @@ def render_model_exports(manifest: Manifest, model_names: list[str]) -> str:
     )
 
 
-def model_exports_module(manifest: Manifest, package_root: Path, model_source: str) -> GeneratedModule:
+def model_exports_module(manifest: Manifest | ClientPlan, package_root: Path, model_source: str) -> GeneratedModule:
     """Build the regenerated facade that gives every schema class a public import path."""
     return formatted_module(
         package_root / "models" / "_exports.py",
@@ -327,14 +270,16 @@ def model_exports_module(manifest: Manifest, package_root: Path, model_source: s
     )
 
 
-def model_extension_modules(manifest: Manifest, package_root: Path) -> list[GeneratedModule]:
+def model_extension_modules(manifest: Manifest | ClientPlan, package_root: Path) -> list[GeneratedModule]:
     """Render package markers and one public response-model extension point per generated model."""
+    package = manifest.package
+    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
     modules = [
         formatted_module(
             package_root / "models" / "__init__.py",
             (
                 '"""Public schema models and client-owned parameter types."""\n\n'
-                f"from {manifest.package}.models._exports import *  # noqa: F403\n"
+                f"from {package}.models._exports import *  # noqa: F403\n"
             ),
             create_once=True,
         ),
@@ -342,10 +287,10 @@ def model_extension_modules(manifest: Manifest, package_root: Path) -> list[Gene
     modules.extend(
         formatted_module(
             package_root / "models" / f"{endpoint.key}.py",
-            render_public_model(manifest, endpoint),
+            render_public_model(package, endpoint),
             create_once=True,
         )
-        for endpoint in manifest.endpoints.values()
+        for endpoint in endpoints
         if endpoint.generate_model
     )
     return modules
@@ -358,37 +303,51 @@ def generate(manifest: Manifest, spec: dict[str, Any] | None, package_root: Path
     `spec` is optional: without one, parameters come from the manifest's `declared_params`,
     which is what lets an API that publishes no OpenAPI document generate the same client.
     """
-    manifest.resolve(spec)
-    paths: dict[str, Any] = (spec or {}).get("paths", {})
-    modules: list[GeneratedModule] = []
+    document = lower_document(OpenAPIDocument.from_mapping(spec)) if spec is not None else None
+    client = compile_manifest(manifest, document)
+    return generate_plan(client, package_root)
 
-    for key, endpoint in manifest.endpoints.items():
-        path_item = paths.get(endpoint.path, {})
-        operation: dict[str, Any] | None = path_item.get("get") if spec else None
-        if operation is not None and spec is not None:
-            operation = {
-                **operation,
-                "parameters": param_tools.effective_parameters(path_item, operation, spec),
-            }
+
+def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModule]:
+    """Render every endpoint and extension module from an already compiled plan."""
+    modules: list[GeneratedModule] = []
+    for is_async in (True, False):
+        folder = "_async" if is_async else "_sync"
+        label = "Asynchronous" if is_async else "Synchronous"
+        modules.extend(
+            (
+                formatted_module(
+                    package_root / folder / "_generated" / "__init__.py",
+                    f'"""{label} generated implementation; do not edit."""\n',
+                ),
+                formatted_module(
+                    package_root / folder / "__init__.py",
+                    f'"""{label} API surface."""\n',
+                    create_once=True,
+                ),
+            ),
+        )
+
+    for endpoint in client.endpoints:
         for is_async in (True, False):
             folder = "_async" if is_async else "_sync"
-            generated_path = package_root / folder / "_generated" / f"{key}.py"
+            generated_path = package_root / folder / "_generated" / f"{endpoint.key}.py"
             modules.append(
                 formatted_module(
                     generated_path,
-                    render_endpoint(manifest, endpoint, operation, is_async=is_async),
+                    render_endpoint(client, endpoint, is_async=is_async),
                 ),
             )
-            public_path = package_root / folder / f"{key}.py"
+            public_path = package_root / folder / f"{endpoint.key}.py"
             modules.append(
                 formatted_module(
                     public_path,
-                    render_public_endpoint(manifest, endpoint, is_async=is_async),
+                    render_public_endpoint(client, endpoint, is_async=is_async),
                     create_once=True,
                 ),
             )
 
-    modules.extend(model_extension_modules(manifest, package_root))
+    modules.extend(model_extension_modules(client, package_root))
 
     for is_async in (True, False):
         folder = "_async" if is_async else "_sync"
@@ -396,11 +355,11 @@ def generate(manifest: Manifest, spec: dict[str, Any] | None, package_root: Path
             (
                 formatted_module(
                     package_root / folder / "_generated" / "client.py",
-                    render_client(manifest, is_async=is_async),
+                    render_client(client, is_async=is_async),
                 ),
                 formatted_module(
                     package_root / folder / "client.py",
-                    render_public_client(manifest, is_async=is_async),
+                    render_public_client(client, is_async=is_async),
                     create_once=True,
                 ),
             ),

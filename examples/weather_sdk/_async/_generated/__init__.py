@@ -1,1 +1,1 @@
-"""Regenerated awaitable implementation; do not edit by hand."""
+"""Asynchronous generated implementation; do not edit."""

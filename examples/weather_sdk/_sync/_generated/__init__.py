@@ -1,1 +1,1 @@
-"""Regenerated blocking implementation; do not edit by hand."""
+"""Synchronous generated implementation; do not edit."""
