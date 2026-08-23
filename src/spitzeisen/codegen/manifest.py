@@ -7,9 +7,8 @@ name the method. There is no standard for any of that: pagination has been an op
 the OpenAPI specification since 2019, and rate limiting sits in discussion classed as
 "server-side policy", which the specification deliberately does not model.
 
-So it lives here instead, keyed by endpoint rather than by JSON pointer, and **the spec is
-optional**: an API that publishes no OpenAPI document can declare its parameters inline and
-generate exactly the same client. That is deliberate — most APIs publish no spec.
+So it lives here instead, keyed by endpoint rather than by JSON pointer. The OpenAPI document
+remains authoritative for paths, operations, parameters, and schemas.
 
 Rate limits appear in no OpenAPI document, so the manifest records the scalar cost of each
 endpoint. The client config owns the actual allowance, which may only be known at runtime.
@@ -39,9 +38,6 @@ SortStyle = Literal["suffix", "param", "none"]
 # against a Literal. Vendors use comma-separated lists for both open and closed value sets.
 CoercionStyle = Literal["plain", "date", "comma_list", "comma_choice_list", "choice"]
 QueryStyle = Literal["form", "spaceDelimited", "pipeDelimited"]
-# A declared parameter has no OpenAPI document to supply its location, so the manifest carries
-# it explicitly. Path parameters remain part of the endpoint path template instead.
-ParamLocation = Literal["query", "header"]
 
 
 class Param(BaseModel):
@@ -58,11 +54,7 @@ class Param(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    # Used by `declared_params` when there is no OpenAPI document. A spec remains authoritative
-    # about where its own parameters are sent.
-    location: ParamLocation = "query"
-    # OpenAPI's query-string representation. These two fields override a supplied spec or
-    # describe a declared query parameter when no spec exists.
+    # OpenAPI's query-string representation. These fields explicitly override the spec.
     style: QueryStyle | None = None
     explode: bool | None = None
     # Spitzeisen's input coercion behavior, deliberately distinct from OpenAPI's `style`.
@@ -74,8 +66,8 @@ class Param(BaseModel):
     literal: str | None = None
     type: str | None = None
     description: str | None = None
-    # OpenAPI-required parameters remain required. Without a spec, True makes a declared
-    # parameter required. A required parameter has no Python default and is always sent.
+    # OpenAPI-required parameters remain required. A required parameter has no Python default
+    # and is always sent.
     required: bool | None = None
     # A Python literal. A parameter with a default is always sent, so it stops being
     # optional in the signature: `active: bool = True` rather than `bool | None = None`.
@@ -158,7 +150,7 @@ class Endpoint(BaseModel):
     sort_param: str | None = Field(default=None, min_length=1)
     order_param: str | None = Field(default=None, min_length=1)
     # Optional client-owned Literal aliases imported from `<package>.models`. OpenAPI enums are
-    # used when present, while these fields cover manifest-only APIs and incomplete documents.
+    # used when present, while these fields cover incomplete documents.
     sort_literal: str | None = None
     order_literal: str | None = None
     # Defaults come from OpenAPI when published. A suffix-style dotted sort default supplies
@@ -176,8 +168,6 @@ class Endpoint(BaseModel):
 
     exclude_params: list[str] = Field(default_factory=list[str])
     params: dict[str, Param] = Field(default_factory=dict[str, Param])
-    # Declared inline when there is no OpenAPI document to read them from.
-    declared_params: dict[str, Param] = Field(default_factory=dict[str, Param])
 
     @model_validator(mode="after")
     def check_endpoint_settings(self) -> Self:

@@ -12,16 +12,13 @@ import keyword
 import re
 import string
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
-from spitzeisen.codegen.diagnostics import SourceLocation, error
 from spitzeisen.codegen.ir import (
     ArrayType,
-    DocumentIR,
     IntersectionType,
     LiteralType,
     ObjectType,
-    OperationIR,
     ParameterIR,
     ParameterLocation,
     PrimitiveKind,
@@ -35,12 +32,18 @@ from spitzeisen.codegen.manifest import Param
 if TYPE_CHECKING:
     from spitzeisen.codegen.ir import JSONScalar, JSONValue
     from spitzeisen.codegen.manifest import Endpoint, Manifest, QueryStyle
+    from spitzeisen.codegen.parser import Endpoint as ParsedEndpoint
+    from spitzeisen.codegen.parser import GeneratorData
 
 type WireLocation = Literal["query", "header"]
 
 _STRUCTURAL_PARAMETERS = {"cursor", "page", "offset"}
 _QUERY_STYLES = {"form", "spaceDelimited", "pipeDelimited"}
-_MANIFEST_URI = "urn:spitzeisen:manifest"
+
+
+def _fail(message: str) -> NoReturn:
+    """Stop policy compilation with a plain generation failure."""
+    raise ValueError(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,10 +155,10 @@ class ClientPlan:
     endpoints: tuple[EndpointPlan, ...]
 
 
-def compile_manifest(manifest: Manifest, document: DocumentIR | None) -> ClientPlan:
-    """Combine a validated manifest with an optional lowered OpenAPI document."""
+def compile_manifest(manifest: Manifest, openapi: GeneratorData) -> ClientPlan:
+    """Combine a validated manifest with parsed OpenAPI generator data."""
     endpoints = tuple(
-        _compile_endpoint(endpoint, _select_operation(endpoint, document)) for endpoint in manifest.endpoints.values()
+        _compile_endpoint(endpoint, _select_operation(endpoint, openapi)) for endpoint in manifest.endpoints.values()
     )
     _validate_public_names(endpoints)
     return ClientPlan(
@@ -167,47 +170,39 @@ def compile_manifest(manifest: Manifest, document: DocumentIR | None) -> ClientP
     )
 
 
-def _select_operation(endpoint: Endpoint, document: DocumentIR | None) -> OperationIR | None:
+def _select_operation(endpoint: Endpoint, openapi: GeneratorData) -> ParsedEndpoint:
     """Select an operation and catch manifest/spec drift before rendering."""
-    if document is None:
-        return None
-
     operation = (
-        document.operation_named(endpoint.operation_id)
+        openapi.operation_named(endpoint.operation_id)
         if endpoint.operation_id is not None
-        else document.operation_at(endpoint.path, endpoint.method)
+        else openapi.operation_at(endpoint.path, endpoint.method)
     )
-    location = SourceLocation(_MANIFEST_URI, f"/endpoints/{_escape(endpoint.key)}")
     if operation is None:
         selector = (
             f"operationId {endpoint.operation_id!r}"
             if endpoint.operation_id is not None
             else f"{endpoint.method.value.upper()} {endpoint.path}"
         )
-        code = "manifest.operation-not-found"
         message = f"{selector} is absent from the OpenAPI document; the vendor may have moved or renamed it"
-        raise error(code, message, location)
+        _fail(message)
     if operation.path != endpoint.path or operation.method is not endpoint.method:
         expected = f"{endpoint.method.value.upper()} {endpoint.path}"
         actual = f"{operation.method.value.upper()} {operation.path}"
-        code = "manifest.operation-drift"
         message = f"operationId {endpoint.operation_id!r} resolves to {actual}, not the manifest's {expected}"
-        raise error(code, message, location)
+        _fail(message)
     if operation.method.value != "get":
-        code = "generator.http-method"
         message = (
             f"{operation.method.value.upper()} operations are parsed but this runtime currently "
             "generates GET requests only"
         )
-        raise error(code, message, operation.source)
+        _fail(message)
     if operation.request_body is not None:
-        code = "generator.request-body"
         message = "GET request bodies are preserved by the compiler but are not supported by the runtime renderer"
-        raise error(code, message, operation.request_body.source)
+        _fail(message)
     return operation
 
 
-def _compile_endpoint(endpoint: Endpoint, operation: OperationIR | None) -> EndpointPlan:
+def _compile_endpoint(endpoint: Endpoint, operation: ParsedEndpoint) -> EndpointPlan:
     """Compile one endpoint's parameters and SDK policy."""
     _validate_policy_references(endpoint, operation)
     parameters = _parameters(endpoint, operation)
@@ -231,7 +226,7 @@ def _compile_endpoint(endpoint: Endpoint, operation: OperationIR | None) -> Endp
         path=endpoint.path,
         method_name=endpoint.method_name,
         model=endpoint.model,
-        summary=endpoint.summary or (operation.summary if operation is not None else ""),
+        summary=endpoint.summary or operation.summary,
         docs_url=endpoint.docs_url,
         generate_model=endpoint.generate_model,
         shape=endpoint.shape,
@@ -252,64 +247,44 @@ def _compile_endpoint(endpoint: Endpoint, operation: OperationIR | None) -> Endp
     )
 
 
-def _parameters(endpoint: Endpoint, operation: OperationIR | None) -> tuple[ParameterPlan, ...]:
+def _parameters(endpoint: Endpoint, operation: ParsedEndpoint) -> tuple[ParameterPlan, ...]:
     """Build public query and header arguments."""
-    if operation is None:
-        sources = tuple(
-            (wire_name, override.location, False, None, override)
-            for wire_name, override in endpoint.declared_params.items()
-        )
-    else:
-        sources = tuple(
-            (parameter.wire_name, parameter.location.value, parameter.required, parameter, None)
-            for parameter in operation.parameters
-            if parameter.location is not ParameterLocation.PATH
-        )
+    sources = tuple(
+        (parameter.wire_name, parameter.location.value, parameter.required, parameter)
+        for parameter in operation.parameters
+        if parameter.location is not ParameterLocation.PATH
+    )
 
     structural = set(_STRUCTURAL_PARAMETERS)
     structural.update(
         item for item in (endpoint.page_size_param, endpoint.sort_param, endpoint.order_param) if item is not None
     )
     plans: list[ParameterPlan] = []
-    for wire_name, raw_location, required_by_spec, specification, declared in sources:
+    for wire_name, raw_location, required_by_spec, specification in sources:
         if raw_location == ParameterLocation.COOKIE.value:
-            source = specification.source if specification is not None else _endpoint_location(endpoint)
-            code = "generator.parameter-location"
-            message = f"parameter {wire_name!r} uses unsupported location 'cookie'"
-            raise error(code, message, source)
+            _fail(f"parameter {wire_name!r} uses unsupported location 'cookie'")
         if raw_location not in {"query", "header"}:
-            source = specification.source if specification is not None else _endpoint_location(endpoint)
-            code = "generator.parameter-location"
-            message = f"parameter {wire_name!r} uses unsupported location {raw_location!r}"
-            raise error(code, message, source)
+            _fail(f"parameter {wire_name!r} uses unsupported location {raw_location!r}")
         location = cast("WireLocation", raw_location)
-        if specification is not None and specification.content:
-            code = "generator.parameter-content"
-            message = f"content-based parameter {wire_name!r} is not supported by the runtime renderer"
-            raise error(code, message, specification.source)
-        if specification is not None and specification.allow_reserved:
-            code = "generator.allow-reserved"
-            message = f"query parameter {wire_name!r} sets allowReserved, which the runtime cannot serialize faithfully"
-            raise error(code, message, specification.source)
+        if specification.content:
+            _fail(f"content-based parameter {wire_name!r} is not supported by the runtime renderer")
+        if specification.allow_reserved:
+            _fail(f"query parameter {wire_name!r} sets allowReserved, which the runtime cannot serialize faithfully")
         if (location == "query" and wire_name in structural) or wire_name in endpoint.exclude_params:
             continue
-        override = endpoint.params.get(wire_name) or declared or _default_param()
+        override = endpoint.params.get(wire_name) or _default_param()
         name = override.name or python_name(wire_name)
-        _validate_argument_name(name, endpoint, wire_name)
+        _validate_argument_name(name, wire_name)
         required = required_by_spec or override.required is True
         style, explode = _query_serialization(override, specification) if location == "query" else ("form", True)
         default = _parameter_default(override, specification, required)
-        schema = specification.schema if specification is not None else None
+        schema = specification.schema
         plans.append(
             ParameterPlan(
                 name=name,
                 wire_name=wire_name,
                 annotation=_annotation(override, schema),
-                description=(
-                    override.description
-                    or (tidy(specification.description) if specification is not None else "")
-                    or f"Filter on `{wire_name}`."
-                ),
+                description=(override.description or tidy(specification.description) or f"Filter on `{wire_name}`."),
                 coercion=_coercion(override, name, schema),
                 location=location,
                 style=style,
@@ -322,20 +297,20 @@ def _parameters(endpoint: Endpoint, operation: OperationIR | None) -> tuple[Para
     return tuple(plans)
 
 
-def _path_parameters(endpoint: Endpoint, operation: OperationIR | None) -> tuple[ParameterPlan, ...]:
+def _path_parameters(endpoint: Endpoint, operation: ParsedEndpoint) -> tuple[ParameterPlan, ...]:
     """Build positional path arguments in path-template order."""
     placeholders = [name for _, name, _, _ in string.Formatter().parse(endpoint.path) if name]
     specifications = {
         parameter.wire_name: parameter
-        for parameter in (operation.parameters if operation is not None else ())
+        for parameter in operation.parameters
         if parameter.location is ParameterLocation.PATH
     }
     plans: list[ParameterPlan] = []
     for wire_name in placeholders:
         specification = specifications.get(wire_name)
-        override = endpoint.params.get(wire_name) or endpoint.declared_params.get(wire_name) or _default_param()
+        override = endpoint.params.get(wire_name) or _default_param()
         name = endpoint.path_params.get(wire_name) or override.name or python_name(wire_name)
-        _validate_argument_name(name, endpoint, wire_name)
+        _validate_argument_name(name, wire_name)
         schema = specification.schema if specification is not None else None
         plans.append(
             ParameterPlan(
@@ -432,13 +407,10 @@ def _coercion(override: Param, name: str, schema: TypeIR | None) -> str:
 
 def _query_serialization(override: Param, specification: ParameterIR | None) -> tuple[QueryStyle, bool]:
     """Resolve OpenAPI query serialization, with explicit manifest overrides."""
-    raw_style = specification.style if specification is not None else "form"
+    raw_style = (specification.style or "form") if specification is not None else "form"
     style = override.style or raw_style
     if style not in _QUERY_STYLES:
-        source = specification.source if specification is not None else SourceLocation(_MANIFEST_URI)
-        code = "generator.query-style"
-        message = f"query parameter style {style!r} is unsupported"
-        raise error(code, message, source)
+        _fail(f"query parameter style {style!r} is unsupported")
     explode = (
         override.explode
         if override.explode is not None
@@ -458,16 +430,14 @@ def _parameter_default(override: Param, specification: ParameterIR | None, requi
     return "None"
 
 
-def _sorting(endpoint: Endpoint, operation: OperationIR | None) -> SortingPlan | None:
+def _sorting(endpoint: Endpoint, operation: ParsedEndpoint) -> SortingPlan | None:
     """Compile the manifest's sorting policy against its named OpenAPI parameters."""
     if endpoint.sort_style == "none":
         return None
     assert endpoint.sort_param is not None  # noqa: S101 - manifest validation guarantees it
-    sort_parameter = _named_query_parameter(endpoint, operation, endpoint.sort_param, "sorting")
+    sort_parameter = _named_query_parameter(operation, endpoint.sort_param, "sorting")
     order_parameter = (
-        _named_query_parameter(endpoint, operation, endpoint.order_param, "sorting")
-        if endpoint.order_param is not None
-        else None
+        _named_query_parameter(operation, endpoint.order_param, "sorting") if endpoint.order_param is not None else None
     )
     sort_default = sort_parameter.default if sort_parameter is not None and sort_parameter.has_default else None
     order_default = order_parameter.default if order_parameter is not None and order_parameter.has_default else None
@@ -483,20 +453,12 @@ def _sorting(endpoint: Endpoint, operation: OperationIR | None) -> SortingPlan |
     if endpoint.order_default is not None:
         order_default = endpoint.order_default
     if sort_default is None:
-        code = "manifest.sort-default"
-        message = f"sorting parameter {endpoint.sort_param!r} needs a default in OpenAPI or `sort_default`"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"sorting parameter {endpoint.sort_param!r} needs a default in OpenAPI or `sort_default`")
     if order_default is None:
         source = endpoint.order_param or f"the suffix on {endpoint.sort_param!r}"
-        code = "manifest.order-default"
-        message = f"sorting direction {source!r} needs a default in OpenAPI or `order_default`"
-        raise error(code, message, _endpoint_location(endpoint))
-    sort_override = endpoint.params.get(endpoint.sort_param) or endpoint.declared_params.get(endpoint.sort_param)
-    order_override = (
-        endpoint.params.get(endpoint.order_param) or endpoint.declared_params.get(endpoint.order_param)
-        if endpoint.order_param is not None
-        else None
-    )
+        _fail(f"sorting direction {source!r} needs a default in OpenAPI or `order_default`")
+    sort_override = endpoint.params.get(endpoint.sort_param)
+    order_override = endpoint.params.get(endpoint.order_param) if endpoint.order_param is not None else None
     return SortingPlan(
         style=endpoint.sort_style,
         sort=_sort_argument(
@@ -521,8 +483,7 @@ def _sorting(endpoint: Endpoint, operation: OperationIR | None) -> SortingPlan |
 
 
 def _named_query_parameter(
-    endpoint: Endpoint,
-    operation: OperationIR | None,
+    operation: ParsedEndpoint,
     wire_name: str | None,
     purpose: str,
 ) -> ParameterIR | None:
@@ -532,15 +493,13 @@ def _named_query_parameter(
     matching = next(
         (
             parameter
-            for parameter in (operation.parameters if operation is not None else ())
+            for parameter in operation.parameters
             if parameter.location is ParameterLocation.QUERY and parameter.wire_name == wire_name
         ),
         None,
     )
-    if operation is not None and matching is None:
-        code = f"manifest.{purpose}-parameter"
-        message = f"{purpose} parameter {wire_name!r} is absent from the OpenAPI operation"
-        raise error(code, message, _endpoint_location(endpoint))
+    if matching is None:
+        _fail(f"{purpose} parameter {wire_name!r} is absent from the OpenAPI operation")
     return matching
 
 
@@ -601,23 +560,21 @@ def _split_suffix_literals(
     return LiteralType(fields), LiteralType(directions)
 
 
-def _page_size(endpoint: Endpoint, operation: OperationIR | None) -> PageSizePlan | None:
+def _page_size(endpoint: Endpoint, operation: ParsedEndpoint) -> PageSizePlan | None:
     """Compile page-size policy and its schema constraint."""
     if endpoint.page_size_param is None:
         return None
-    matching = _named_query_parameter(endpoint, operation, endpoint.page_size_param, "page-size")
+    matching = _named_query_parameter(operation, endpoint.page_size_param, "page-size")
     maximum = endpoint.max_page_size
     if maximum is None and matching is not None and isinstance(matching.schema, PrimitiveType):
         schema_maximum = matching.schema.maximum
         maximum = int(schema_maximum) if schema_maximum is not None else None
     if maximum is None:
-        code = "manifest.page-size-maximum"
-        message = f"page-size parameter {endpoint.page_size_param!r} needs `max_page_size` or an OpenAPI maximum"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"page-size parameter {endpoint.page_size_param!r} needs `max_page_size` or an OpenAPI maximum")
     return PageSizePlan(endpoint.page_size_param, maximum)
 
 
-def _model_imports(endpoint: Endpoint, operation: OperationIR | None) -> tuple[str, ...]:
+def _model_imports(endpoint: Endpoint, operation: ParsedEndpoint) -> tuple[str, ...]:
     """Collect model-owned aliases referenced by generated annotations or coercion."""
     names = {
         name
@@ -625,13 +582,11 @@ def _model_imports(endpoint: Endpoint, operation: OperationIR | None) -> tuple[s
             endpoint.sort_literal,
             endpoint.order_literal,
             *(parameter.literal for parameter in endpoint.params.values()),
-            *(parameter.literal for parameter in endpoint.declared_params.values()),
         )
         if name
     }
-    if operation is not None:
-        for parameter in operation.parameters:
-            names.update(_reference_names(parameter.schema))
+    for parameter in operation.parameters:
+        names.update(_reference_names(parameter.schema))
     names.discard(endpoint.model)
     return tuple(sorted(names))
 
@@ -661,7 +616,7 @@ def _coerce_function_imports(endpoint: Endpoint) -> tuple[str, ...]:
         sorted(
             {
                 parameter.coerce_function
-                for parameter in (*endpoint.params.values(), *endpoint.declared_params.values())
+                for parameter in endpoint.params.values()
                 if parameter.coerce_function is not None
             },
         ),
@@ -689,60 +644,31 @@ def _validate_public_names(endpoints: tuple[EndpointPlan, ...]) -> None:
         values = [getattr(endpoint, attribute) for endpoint in endpoints]
         duplicates = sorted({value for value in values if values.count(value) > 1})
         if duplicates:
-            code = "manifest.endpoint-name-collision"
-            message = f"endpoint keys produce duplicate {attribute.replace('_', ' ')} values: {duplicates}"
-            raise error(code, message, SourceLocation(_MANIFEST_URI, "/endpoints"))
+            _fail(f"endpoint keys produce duplicate {attribute.replace('_', ' ')} values: {duplicates}")
 
     model_names = [endpoint.model for endpoint in endpoints if endpoint.generate_model]
     duplicate_models = sorted({name for name in model_names if model_names.count(name) > 1})
     if duplicate_models:
-        code = "manifest.model-collision"
         message = (
             f"multiple generated endpoints use public response models {duplicate_models}; "
             "give each extension module an unambiguous model"
         )
-        raise error(code, message, SourceLocation(_MANIFEST_URI, "/endpoints"))
+        _fail(message)
 
 
-def _validate_policy_references(endpoint: Endpoint, operation: OperationIR | None) -> None:
+def _validate_policy_references(endpoint: Endpoint, operation: ParsedEndpoint) -> None:
     """Catch manifest keys that would otherwise be silently ignored."""
     placeholders = set(_path_parameter_names(endpoint.path))
     unknown_path_names = sorted(set(endpoint.path_params) - placeholders)
     if unknown_path_names:
-        code = "manifest.path-parameter"
-        message = f"path parameter mappings {unknown_path_names} do not occur in {endpoint.path!r}"
-        raise error(code, message, _endpoint_location(endpoint))
-
-    if operation is None:
-        unknown_overrides = sorted(set(endpoint.params) - placeholders)
-        if unknown_overrides:
-            code = "manifest.parameter-override"
-            message = (
-                f"parameter overrides {unknown_overrides} have no OpenAPI operation; "
-                "declare manifest-only parameters under `declared_params`"
-            )
-            raise error(code, message, _endpoint_location(endpoint))
-        if endpoint.exclude_params:
-            code = "manifest.excluded-parameter"
-            message = "`exclude_params` requires an OpenAPI operation whose parameters can be excluded"
-            raise error(code, message, _endpoint_location(endpoint))
-        return
-
-    if endpoint.declared_params:
-        code = "manifest.declared-with-openapi"
-        message = "`declared_params` is only for APIs without an OpenAPI document; use `params` for overrides"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"path parameter mappings {unknown_path_names} do not occur in {endpoint.path!r}")
     available = {parameter.wire_name for parameter in operation.parameters}
     unknown_overrides = sorted(set(endpoint.params) - available)
     if unknown_overrides:
-        code = "manifest.parameter-override"
-        message = f"parameter overrides {unknown_overrides} are absent from the selected OpenAPI operation"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"parameter overrides {unknown_overrides} are absent from the selected OpenAPI operation")
     unknown_exclusions = sorted(set(endpoint.exclude_params) - available)
     if unknown_exclusions:
-        code = "manifest.excluded-parameter"
-        message = f"excluded parameters {unknown_exclusions} are absent from the selected OpenAPI operation"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"excluded parameters {unknown_exclusions} are absent from the selected OpenAPI operation")
 
 
 def _validate_signature_names(
@@ -758,9 +684,7 @@ def _validate_signature_names(
         reserved.update({"sort", "order"})
     duplicates = sorted({name for name in names if names.count(name) > 1} | (set(names) & reserved))
     if duplicates:
-        code = "manifest.parameter-name-collision"
-        message = f"endpoint {endpoint.key!r} produces duplicate or reserved arguments {duplicates}"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"endpoint {endpoint.key!r} produces duplicate or reserved arguments {duplicates}")
 
 
 def _validate_unique_arguments(endpoint: Endpoint, parameters: list[ParameterPlan]) -> None:
@@ -768,18 +692,14 @@ def _validate_unique_arguments(endpoint: Endpoint, parameters: list[ParameterPla
     names = [parameter.name for parameter in parameters]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
-        code = "manifest.parameter-name-collision"
-        message = f"endpoint {endpoint.key!r} maps multiple wire parameters to {duplicates}"
-        raise error(code, message, _endpoint_location(endpoint))
+        _fail(f"endpoint {endpoint.key!r} maps multiple wire parameters to {duplicates}")
 
 
-def _validate_argument_name(name: str, endpoint: Endpoint, wire_name: str) -> None:
+def _validate_argument_name(name: str, wire_name: str) -> None:
     """Require generated public arguments to be legal Python identifiers."""
     if name.isidentifier() and not keyword.iskeyword(name):
         return
-    code = "manifest.parameter-name"
-    message = f"parameter {wire_name!r} maps to invalid Python argument {name!r}; configure a friendly `name`"
-    raise error(code, message, _endpoint_location(endpoint))
+    _fail(f"parameter {wire_name!r} maps to invalid Python argument {name!r}; configure a friendly `name`")
 
 
 def _default_param() -> Param:
@@ -796,11 +716,6 @@ def _is_date(schema: TypeIR | None) -> bool:
     return False
 
 
-def _endpoint_location(endpoint: Endpoint) -> SourceLocation:
-    """Return the manifest location for one endpoint."""
-    return SourceLocation(_MANIFEST_URI, f"/endpoints/{_escape(endpoint.key)}")
-
-
 def python_name(wire_name: str) -> str:
     """Convert a dotted wire parameter into the conventional Python spelling."""
     return wire_name.replace(".", "_").replace("-", "_")
@@ -809,11 +724,6 @@ def python_name(wire_name: str) -> str:
 def tidy(text: str) -> str:
     """Collapse vendor prose onto one docstring line."""
     return re.sub(r"\s+", " ", text or "").strip()
-
-
-def _escape(token: str) -> str:
-    """Escape one JSON Pointer token."""
-    return token.replace("~", "~0").replace("/", "~1")
 
 
 def _path_parameter_names(path: str) -> tuple[str, ...]:

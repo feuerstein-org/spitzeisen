@@ -1,116 +1,132 @@
 # Code-generation architecture
 
-Spitzeisen treats code generation as a compiler, the compiler has three deliberate boundaries:
+Spitzeisen deliberately follows openapi-python-client until the point where the two projects need
+different generated SDKs:
 
 ```text
-OpenAPI + optional Overlay       manifest.yaml
-            │                         │
-            ▼                         │
-  validated document                  │
-  + safe $ref resolver                │
-            │                         │
-            ▼                         │
-  protocol-neutral IR ────────────────┘
-            │
-            ▼
-  typed SDK generation plan
-        ┌───┴────────────┐
-        ▼                ▼
-  Python renderers   Pydantic model backend
-        │                │
-        └───────┬────────┘
-                ▼
-    generated async/sync SDK
+explicit --path or --url             Spitzeisen manifest
+          │                                  │
+          ▼                                  │
+upstream byte loading                        │
+(httpx + ruamel.yaml)                        │
+          │                                  │
+          ▼                                  │
+vendored OpenAPI Pydantic model              │
+          │                                  │
+          ▼                                  │
+GeneratorData.from_dict()                    │
+components → endpoint collections            │
+          │                                  │
+          └──────────────┬───────────────────┘
+                         ▼
+                  typed ClientPlan
+                    ┌────┴────┐
+                    ▼         ▼
+              Jinja output  model backend
+                    └────┬────┘
+                         ▼
+                 async + sync SDK
 ```
+
+There is intentionally no separate OpenAPI validator, overlay processor, dialect abstraction,
+diagnostics graph, document-node graph, general `$ref` resolver, or manifest-only path. Pydantic
+hydration is the document-validation boundary. As in upstream, only local component references are
+supported by the parser.
 
 ## Files and responsibilities
 
-`diagnostics.py`
-: Defines source locations, diagnostics, and `CodegenError`. Compiler failures carry a URI and
-  JSON Pointer, so an error identifies the vendor input that caused it.
+`codegen/__init__.py`
+: Contains the source loader adapted from openapi-python-client. A URL is fetched with `httpx`; a
+  path is read as bytes. An exact `application/json` content type selects `json.loads`; all other
+  inputs go through `ruamel.yaml`'s safe loader.
 
-`document.py`
-: Loads JSON or YAML safely, selects OpenAPI 3.0/3.1/3.2 validation, and exposes lazy raw/resolved nodes. Local references may only read files under the configured spec directory. HTTP references are rejected due to safety concerns.
+`codegen/schema/`
+: A byte-for-byte snapshot of upstream's complete Pydantic OpenAPI object model. `OpenAPI`,
+  `PathItem`, `Operation`, `Parameter`, `Response`, `RequestBody`, `Schema`, and `Reference` are the
+  objects the active parser consumes. Provenance and update rules are in
+  `vendored-openapi-schema.md`.
 
-`ir.py`
-: Contains the immutable, generator-neutral intermediate representation: operations, parameters, request bodies, responses, status patterns, media types, schema types, and stable reference identities. It describes protocol facts only.
+`codegen/parser/errors.py`
+: Upstream's small `GeneratorError`/`ParseError` data structures. Fatal loading or Pydantic errors
+  stop generation. Parser warnings may omit an unsupported endpoint or response while allowing the
+  rest of a client to be generated; `--fail-on-warning` turns those warnings into a non-zero exit.
 
-`lower.py`
-: Lowers a validated document into the IR. This is where OpenAPI rules are normalized once:
-  operation-level parameters replace path-level declarations with the same `(name, in)` identity,
-  path parameters follow placeholder order, response status ranges are parsed, 3.0 `nullable` is
-  normalized, and references retain canonical identities instead of being recursively expanded.
+`codegen/parser/openapi.py`
+: The OpenAPI-to-generator-data boundary. Its workflow mirrors upstream's
+  `GeneratorData.from_dict()`: hydrate `OpenAPI`, build component registries, traverse paths into
+  tag collections, parse operation parameters before Path Item parameters, sort path parameters,
+  resolve request/response component references, order response patterns, and collect warnings.
 
-`manifest.py`
-: Defines SDK policy OpenAPI cannot express: the public method/model names, scalar rate-limit cost,
+  Its output is intentionally Spitzeisen-specific after that workflow. `Endpoint` retains the
+  protocol facts our policy needs instead of upstream's `attrs`, `Unset`, import, and response-union
+  objects.
+
+`codegen/ir.py`
+: The small schema-type IR used inside parsed endpoints: primitives, literals, arrays, objects,
+  references, unions, intersections, media types, parameters, request bodies, and responses. It no
+  longer duplicates the complete document or operation hierarchy already represented by upstream's
+  Pydantic/parser architecture.
+
+`codegen/manifest.py`
+: Defines SDK policy OpenAPI cannot express: public method/model names, scalar rate-limit cost,
   pagination strategy, not-found behavior, page-size and sorting controls, public parameter names,
-  and vendor-specific coercion hooks. Pydantic rejects unknown or contradictory settings early.
+  and vendor-specific coercion hooks. OpenAPI remains authoritative for operations and parameters.
 
-`policy.py`
-: Joins `DocumentIR` and `Manifest` into an immutable `ClientPlan`. It selects operations, detects
-  spec/manifest drift, derives precise Python arguments, validates serializer support, and computes
-  imports and helper calls. This is the only layer that knows both OpenAPI and Spitzeisen SDK policy.
+`codegen/policy.py`
+: Joins `GeneratorData` and `Manifest` into an immutable `ClientPlan`. It selects parsed endpoints,
+  detects manifest/spec drift, derives Python arguments, checks runtime serializer support, and
+  computes imports and helper calls. This is the first layer that intentionally diverges from
+  openapi-python-client's generated architecture.
 
-`generate.py`
-: Renders a `ClientPlan`. It owns the Jinja environment, formatting, output paths, public/generated
-  class split, and model export discovery. Its inputs are plans, never raw OpenAPI values.
+`codegen/generate.py`
+: Renders a `ClientPlan`. It owns the Jinja environment, formatting, output paths,
+  public/generated class split, and model export discovery. Templates receive plans, never raw
+  OpenAPI mappings or Pydantic objects.
 
-`cli.py`
-: Orchestrates one complete build transaction. `spitzeisen-gen generate` applies an overlay in a
-  temporary file, validates and compiles the document, runs the model backend, renders both client
-  surfaces, atomically replaces generated files, preserves public extension modules, and removes
-  obsolete files only from replaceable generated directories. `spitzeisen-gen check` performs the
-  same clean build in memory and compares every generated artifact, including models.
+`codegen/cli.py`
+: A Typer interface modeled after upstream. Both `generate` and Spitzeisen's additional `check`
+  command require exactly one of `--path`/`--url`, a `--config` manifest, and an `--output-path`.
+  Generation runs the model backend, renders both surfaces, atomically replaces generated files,
+  preserves public extension modules, and removes obsolete files only from generated directories.
 
-`templates/endpoint.py.jinja` and `templates/endpoint_single.py.jinja`
-: Render collection and single-object endpoint bases. Each template is evaluated once for async and
-  once for sync because code and documentation differ between the two public surfaces.
+`codegen/templates/endpoint.py.jinja` and `endpoint_single.py.jinja`
+: Render collection and single-object endpoint bases once for async and once for sync.
 
-`templates/endpoint_public.py.jinja`
-: Scaffolds the public endpoint subclass once. SDK authors may customize this file; regeneration
-  updates its generated base without overwriting the subclass.
+`codegen/templates/endpoint_public.py.jinja`
+: Scaffolds the public endpoint subclass once. SDK authors own this file after creation.
 
-`templates/client.py.jinja` and `templates/client_public.py.jinja`
-: Render aggregate client wiring and its create-once public subclass. Every endpoint shares the same
-  config and participates in the aggregate context-manager lifecycle.
+`codegen/templates/client.py.jinja` and `client_public.py.jinja`
+: Render aggregate client wiring and its create-once public subclass.
 
-`templates/model_public.py.jinja` and `templates/model_exports.py.jinja`
-: Scaffold response-model subclasses and maintain the public model facade. The storage module remains
-  replaceable while callers and endpoint annotations use stable public imports.
+`codegen/templates/model_public.py.jinja` and `model_exports.py.jinja`
+: Scaffold response-model subclasses and maintain stable public model imports.
+
+## Why the IR diverges
+
+openapi-python-client's post-parse property objects encode its generated package: `attrs` models,
+`Unset`, import objects, per-operation `.sync`/`.async` functions, and broad response unions.
+Spitzeisen instead generates conventional typed API classes, paired async/sync surfaces, Pydantic
+response validation, and manifest-driven rate-limit cost and pagination. Reusing upstream's final IR
+would import the exact API design this project is intended to replace.
+
+The maintained boundary is therefore narrow and explicit:
+
+1. Copy upstream source loading and Pydantic hydration.
+2. Mirror its component/endpoint parsing workflow and local-reference behavior.
+3. Lower into Spitzeisen's small protocol representation.
+4. Apply Spitzeisen policy and render its public SDK design.
 
 ## Model backend
 
-The operation compiler is owned by Spitzeisen. Schema storage is currently delegated to
-`datamodel-code-generator`, invoked through its documented CLI. The backend receives only selected
-operations, plus manifest aliases and type overrides. This boundary is intentional: a future model
-backend can replace it without changing document loading, operation lowering, policy compilation,
-endpoint templates, or the generated public API.
+Schema model emission remains delegated to `datamodel-code-generator`. It receives the raw loaded
+document pruned to manifest-selected paths, plus manifest aliases and type overrides. The parser IR
+is authoritative for endpoint signatures and wire behavior; the mature backend handles the wider
+JSON Schema vocabulary needed by response models.
 
-The raw validated document is retained for this backend because a mature JSON Schema model generator
-supports more schema vocabulary than Spitzeisen needs to interpret for endpoint signatures. The
-neutral IR remains the source of truth for operation behavior.
+## Extending code generation
 
-## Why not use openapi-python-client's internal IR?
-
-`openapi-python-client` is an excellent complete generator, but its internal property objects encode
-that project's generated architecture: Jinja template names, import objects, `Unset` behavior, and
-response unions. Depending on those internal types would couple Spitzeisen's public API to upstream
-implementation details and reintroduce the broad response types this project deliberately avoids.
-
-We did adopt small, well-tested algorithms where the behavior is an OpenAPI rule rather than an
-architectural choice. Parameter precedence and response-status ordering were adapted and rewritten
-against Spitzeisen's neutral IR. Their provenance and MIT license are recorded in
-`THIRD_PARTY_NOTICES.md` and `licenses/openapi-python-client.txt`.
-
-## Extending the compiler
-
-Adding a protocol feature follows the boundaries above:
-
-1. Preserve and normalize it in `ir.py` and `lower.py` with dialect-specific tests.
-2. Decide its SDK policy and supported combinations in `manifest.py` and `policy.py`.
-3. Add runtime support.
-4. Render the already-compiled plan; do not parse OpenAPI in Jinja or `generate.py`.
-
-For example, POST support is already representable in the frontend. Completing it requires request
-body policy, runtime request dispatch, and templates. Until then, selecting a POST operation produces
-a source-located `generator.http-method` diagnostic rather than a subtly incorrect GET request.
+When adding a protocol feature, preserve upstream's parsing order and error behavior where
+possible. Extend the typed endpoint/IR representation only for facts Spitzeisen policy needs, then
+add policy, runtime support, and rendering. For example, non-GET operations and request bodies are
+already parsed; generation rejects them plainly until the runtime and templates can represent them
+faithfully.

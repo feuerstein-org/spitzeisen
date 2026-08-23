@@ -1,24 +1,25 @@
-"""The unified, reproducible code-generation command."""
+"""The upstream-shaped, reproducible code-generation command."""
 
+import json
 from pathlib import Path
 
-import yaml
-from click.testing import CliRunner
+from typer.testing import CliRunner
 
 from spitzeisen.codegen.cli import main
 
 
-def manifest_only_project(root: Path) -> tuple[Path, Path]:
-    """Create inputs that exercise endpoint generation without a model backend subprocess."""
-    spec_dir = root / "spec"
+def project(root: Path) -> tuple[Path, Path, Path]:
+    """Create explicit OpenAPI and manifest inputs without invoking the model backend."""
+    input_dir = root / "spec"
     package_root = root / "example_sdk"
-    spec_dir.mkdir()
+    input_dir.mkdir()
     (package_root / "models").mkdir(parents=True)
     (package_root / "models" / "things.py").write_text(
         "from spitzeisen import SpitzeisenModel\n\nclass Thing(SpitzeisenModel):\n    pass\n",
     )
-    (spec_dir / "manifest.yaml").write_text(
-        yaml.safe_dump(
+    manifest = input_dir / "manifest.json"
+    manifest.write_text(
+        json.dumps(
             {
                 "vendor": "example",
                 "base_url": "https://api.example.test",
@@ -30,28 +31,63 @@ def manifest_only_project(root: Path) -> tuple[Path, Path]:
                         "method_name": "get_things",
                         "model": "Thing",
                         "generate_model": False,
-                        "declared_params": {"category": {"description": "Category to return."}},
+                        "params": {"category": {"description": "Category to return."}},
                     },
                 },
             },
         ),
     )
-    return spec_dir, package_root
+    openapi = input_dir / "openapi.json"
+    openapi.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "Example", "version": "1.0.0"},
+                "paths": {
+                    "/things": {
+                        "get": {
+                            "parameters": [
+                                {"name": "category", "in": "query", "schema": {"type": "string"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        },
+                    },
+                },
+            },
+        ),
+    )
+    return openapi, manifest, package_root
 
 
 def test_cli_exposes_one_generation_transaction_and_one_drift_check(tmp_path: Path) -> None:
     """SDK authors do not have to coordinate independent model and endpoint phases."""
-    spec_dir, package_root = manifest_only_project(tmp_path)
+    openapi, manifest, package_root = project(tmp_path)
     runner = CliRunner()
 
     help_result = runner.invoke(main, ["--help"])
     generated = runner.invoke(
         main,
-        ["generate", "--spec-dir", str(spec_dir), "--package-root", str(package_root)],
+        [
+            "generate",
+            "--path",
+            str(openapi),
+            "--config",
+            str(manifest),
+            "--output-path",
+            str(package_root),
+        ],
     )
     checked = runner.invoke(
         main,
-        ["check", "--spec-dir", str(spec_dir), "--package-root", str(package_root)],
+        [
+            "check",
+            "--path",
+            str(openapi),
+            "--config",
+            str(manifest),
+            "--output-path",
+            str(package_root),
+        ],
     )
 
     assert help_result.exit_code == 0
@@ -67,9 +103,16 @@ def test_cli_exposes_one_generation_transaction_and_one_drift_check(tmp_path: Pa
 
 def test_check_catches_modified_and_orphaned_generated_modules(tmp_path: Path) -> None:
     """CI checks both byte drift and files left behind after an endpoint is removed."""
-    spec_dir, package_root = manifest_only_project(tmp_path)
+    openapi, manifest, package_root = project(tmp_path)
     runner = CliRunner()
-    arguments = ["--spec-dir", str(spec_dir), "--package-root", str(package_root)]
+    arguments = [
+        "--path",
+        str(openapi),
+        "--config",
+        str(manifest),
+        "--output-path",
+        str(package_root),
+    ]
     assert runner.invoke(main, ["generate", *arguments]).exit_code == 0
 
     generated = package_root / "_async" / "_generated" / "things.py"

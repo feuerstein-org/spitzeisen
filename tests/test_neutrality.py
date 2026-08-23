@@ -159,10 +159,10 @@ async def test_public_weather_model_runs_its_custom_validator(
         await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
 
 
-async def test_weather_overlay_constraints_reach_the_generated_model(
+async def test_weather_spec_constraints_reach_the_generated_model(
     weather_api: tuple[AsyncWeatherApi, FakeRouter],
 ) -> None:
-    """The HTML documentation's percentage semantics become actual generated validation."""
+    """The transcribed specification's percentage semantics become generated validation."""
     api, router = weather_api
     payload = weather_payload()
     measurements = payload["main"]

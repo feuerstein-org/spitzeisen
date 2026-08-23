@@ -11,6 +11,7 @@ import asyncio
 import copy
 import importlib
 import json
+import string
 import sys
 from datetime import date
 from pathlib import Path
@@ -22,7 +23,6 @@ from pydantic import ValidationError
 
 from spitzeisen import AsyncSpitzeisenConfig, NoLimit
 from spitzeisen.codegen.cli import is_current, normalize_model_header, write
-from spitzeisen.codegen.diagnostics import CodegenError
 from spitzeisen.codegen.generate import GeneratedModule, generate, generated_model_names, model_exports_module
 from spitzeisen.codegen.manifest import Manifest
 from spitzeisen.testing import FakeRouter
@@ -73,13 +73,32 @@ def render(spec: dict[str, Any] | None, **overrides: Any) -> dict[str, str]:
     """Generate and return the modules keyed by a readable suffix of their path."""
     manifest = Manifest.model_validate(manifest_dict(**overrides))
     package_root = Path("example_api")
-    modules = generate(manifest, _complete_openapi(spec), package_root)
+    modules = generate(manifest, _complete_openapi(spec, manifest), package_root)
     return {module.path.relative_to(package_root).as_posix(): module.source for module in modules}
 
 
-def _complete_openapi(spec: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Make small inline test cases valid OpenAPI documents before invoking the strict frontend."""
-    if spec is None or "openapi" in spec:
+def _complete_openapi(spec: dict[str, Any] | None, manifest: Manifest) -> dict[str, Any]:
+    """Make small inline test cases valid OpenAPI documents before invoking the typed parser."""
+    if spec is None:
+        spec = {"paths": {}}
+        for endpoint in manifest.endpoints.values():
+            path_parameters = [
+                {
+                    "name": name,
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+                for _, name, _, _ in string.Formatter().parse(endpoint.path)
+                if name
+            ]
+            spec["paths"][endpoint.path] = {
+                endpoint.method.value: {
+                    "parameters": path_parameters,
+                    "responses": {"200": {"description": "OK"}},
+                },
+            }
+    if "openapi" in spec:
         return spec
     completed = copy.deepcopy(spec)
     completed.update(
@@ -235,7 +254,7 @@ def test_an_endpoint_missing_from_the_spec_stops_generation(spec: dict[str, Any]
     endpoints = manifest_dict()["endpoints"]
     endpoints["splits"]["path"] = "/stocks/v1/splits-renamed"
 
-    with pytest.raises(CodegenError, match="vendor may have moved or renamed it"):
+    with pytest.raises(ValueError, match="vendor may have moved or renamed it"):
         render(spec, endpoints=endpoints)
 
 
@@ -246,7 +265,7 @@ def test_manifest_selects_methods_but_the_runtime_reports_unsupported_generation
     path_item = spec["paths"]["/stocks/v1/splits"]
     path_item["post"] = path_item.pop("get")
 
-    with pytest.raises(CodegenError, match="currently generates GET requests only"):
+    with pytest.raises(ValueError, match="currently generates GET requests only"):
         render(spec, endpoints=endpoints)
 
 
@@ -255,7 +274,7 @@ def test_a_path_without_get_stops_generation(spec: dict[str, Any]) -> None:
     path_item = spec["paths"]["/stocks/v1/splits"]
     path_item["post"] = path_item.pop("get")
 
-    with pytest.raises(CodegenError, match=r"GET /stocks/v1/splits.*absent"):
+    with pytest.raises(ValueError, match=r"GET /stocks/v1/splits.*absent"):
         render(spec)
 
 
@@ -538,12 +557,12 @@ def test_openapi_cookie_parameters_are_rejected_until_supported() -> None:
         },
     }
 
-    with pytest.raises(CodegenError, match="unsupported location 'cookie'"):
+    with pytest.raises(ValueError, match="unsupported location 'cookie'"):
         render(spec, endpoints=endpoints)
 
 
-def test_openapi_parameter_content_is_rejected_until_supported() -> None:
-    """Do not silently treat content-based parameters as ordinary string parameters."""
+def test_schema_less_content_parameter_is_skipped_like_upstream() -> None:
+    """The parser follows upstream and skips parameters which do not carry ``schema``."""
     spec = {
         "paths": {
             "/v1/search": {
@@ -568,8 +587,9 @@ def test_openapi_parameter_content_is_rejected_until_supported() -> None:
         },
     }
 
-    with pytest.raises(CodegenError, match=r"content-based parameter 'filter'.*not supported"):
-        render(spec, endpoints=endpoints)
+    source = render(spec, endpoints=endpoints)["_async/_generated/search.py"]
+
+    assert "filter:" not in source
 
 
 def test_openapi_query_serialization_metadata_reaches_generated_code() -> None:
@@ -683,7 +703,7 @@ def test_openapi_deep_object_query_serialization_is_rejected() -> None:
         },
     }
 
-    with pytest.raises(CodegenError, match="style 'deepObject' is unsupported"):
+    with pytest.raises(ValueError, match="style 'deepObject' is unsupported"):
         render(spec, endpoints=endpoints)
 
 
@@ -706,7 +726,7 @@ def test_parameter_overrides_must_exist_in_the_selected_operation(spec: dict[str
     endpoints = manifest_dict()["endpoints"]
     endpoints["splits"]["params"]["removed_filter"] = {"name": "removed_filter"}
 
-    with pytest.raises(CodegenError, match=r"removed_filter.*absent from the selected OpenAPI operation"):
+    with pytest.raises(ValueError, match=r"removed_filter.*absent from the selected OpenAPI operation"):
         render(spec, endpoints=endpoints)
 
 
@@ -918,27 +938,37 @@ def test_a_single_resource_endpoint_without_an_envelope_returns_the_body() -> No
     assert "return data" in source
 
 
-def test_a_vendor_without_a_spec_generates_the_same_client() -> None:
-    """
-    The path for the many APIs that publish no OpenAPI document at all.
-
-    Parameters are declared inline; everything downstream is identical.
-    """
+def test_openapi_parameters_feed_the_same_policy_pipeline() -> None:
+    """OpenAPI owns wire parameters while the manifest owns friendly SDK presentation."""
     endpoints = {
         "strikes": {
             "path": "/datav2/strikes",
             "method_name": "get_strikes",
             "model": "Strike",
             "pagination": "none",
-            "declared_params": {
+            "params": {
                 "ticker": {"description": "Ticker to fetch strikes for.", "required": True},
                 "tradeDate": {"name": "trade_date", "coercion_style": "date"},
-                "workspace": {"location": "header", "required": True},
+                "workspace": {"required": True},
+            },
+        },
+    }
+    spec = {
+        "paths": {
+            "/datav2/strikes": {
+                "get": {
+                    "parameters": [
+                        {"name": "ticker", "in": "query", "schema": {"type": "string"}},
+                        {"name": "tradeDate", "in": "query", "schema": {"type": "string", "format": "date"}},
+                        {"name": "workspace", "in": "header", "schema": {"type": "string"}},
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                },
             },
         },
     }
 
-    modules = render(None, endpoints=endpoints)
+    modules = render(spec, endpoints=endpoints)
     source = modules["_async/_generated/strikes.py"]
 
     ast.parse(source)

@@ -19,11 +19,11 @@ run = "uv run python build_sync.py --check"
 
 [tasks.codegen]
 description = "Regenerate the complete example weather SDK"
-run = "uv run spitzeisen-gen generate --spec-dir examples/spec --package-root examples/weather_sdk"
+run = "uv run spitzeisen-gen generate --path examples/spec/vendor.json --config examples/spec/manifest.yaml --output-path examples/weather_sdk"
 
 [tasks.check-codegen]
 description = "Fail if any generated example SDK output is stale"
-run = "uv run spitzeisen-gen check --spec-dir examples/spec --package-root examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --config examples/spec/manifest.yaml --output-path examples/weather_sdk"
 
 [tasks.demo-example]
 description = "Run the generated weather SDK against an offline fake transport"

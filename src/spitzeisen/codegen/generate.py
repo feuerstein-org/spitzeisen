@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from spitzeisen.codegen.document import OpenAPIDocument
-from spitzeisen.codegen.lower import lower_document
+from spitzeisen.codegen.parser import GeneratorData
+from spitzeisen.codegen.parser.errors import GeneratorError
 from spitzeisen.codegen.policy import ClientPlan, EndpointPlan, ParameterPlan, compile_manifest
 
 if TYPE_CHECKING:
@@ -296,15 +296,12 @@ def model_extension_modules(manifest: Manifest | ClientPlan, package_root: Path)
     return modules
 
 
-def generate(manifest: Manifest, spec: dict[str, Any] | None, package_root: Path) -> list[GeneratedModule]:
-    """
-    Render every module for a manifest.
-
-    `spec` is optional: without one, parameters come from the manifest's `declared_params`,
-    which is what lets an API that publishes no OpenAPI document generate the same client.
-    """
-    document = lower_document(OpenAPIDocument.from_mapping(spec)) if spec is not None else None
-    client = compile_manifest(manifest, document)
+def generate(manifest: Manifest, spec: dict[str, Any], package_root: Path) -> list[GeneratedModule]:
+    """Parse an OpenAPI mapping and render every module selected by a manifest."""
+    openapi = GeneratorData.from_dict(spec)
+    if isinstance(openapi, GeneratorError):
+        raise RuntimeError(openapi.detail or openapi.header)  # noqa: TRY004 - parser result, not a type contract
+    client = compile_manifest(manifest, openapi)
     return generate_plan(client, package_root)
 
 

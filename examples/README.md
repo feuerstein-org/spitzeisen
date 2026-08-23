@@ -8,7 +8,6 @@ into OpenAPI 3.1 because the source page itself is HTML.
 
 ```text
 spec/vendor.json                 OpenAPI transcription of the official request and response
-spec/overlay.yaml                explicit requiredness and numeric schema constraints
 spec/manifest.yaml               SDK semantics OpenAPI cannot express
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
@@ -28,9 +27,9 @@ mise run check-codegen
 mise run demo-example
 ```
 
-`codegen` validates the vendor input, applies the overlay temporarily, compiles endpoint policy,
-generates models, and writes both endpoint surfaces in one transaction. No patched or pruned
-intermediate is kept as a second source of truth.
+`codegen` hydrates the vendor input into the vendored OpenAPI model, compiles endpoint policy,
+generates models, and writes both endpoint surfaces in one transaction. No intermediate is kept as
+a second source of truth.
 
 Files named or nested under `_generated` are replaced on every run. Public model, endpoint, and
 client modules are created only when absent, so adding custom SDK behaviour there is safe.
@@ -49,6 +48,5 @@ The operation requires `lat`, `lon`, and the `appid` security credential, and op
 `units`, `lang`, or a non-JSON `mode`. The manifest exposes the coordinates as `latitude` and
 `longitude`, renames `lang` to `language`, and excludes `mode` because Spitzeisen consumes JSON.
 The OpenAPI security scheme keeps `appid` out of the method while `QueryParamAuth` supplies it at
-runtime. This is the same division a production SDK would use: OpenAPI describes the wire, the
-overlay makes schema assumptions explicit, the manifest shapes the Python API, and runtime config
-owns credentials.
+runtime. This is the same division a production SDK would use: OpenAPI describes the wire and schema
+assumptions, the manifest shapes the Python API, and runtime config owns credentials.

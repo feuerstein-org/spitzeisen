@@ -30,11 +30,9 @@ codegen = [
     "jinja2>=3.1.0",
     "ruff>=0.14",
     "datamodel-code-generator>=0.28",
-    "jsonschema-path>=0.5.0",
-    "openapi-spec-validator>=0.9.0",
-    "oas-patch>=0.6.0",
-    "pyyaml>=6.0",
-    "click>=8.1",
+    "httpx>=0.23.1,<0.29",
+    "ruamel.yaml>=0.18.6,<0.20",
+    "typer>0.16,<0.28",
 ]
 
 [project.scripts]
@@ -83,6 +81,10 @@ exclude_lines = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = [
+    "src/spitzeisen/codegen/schema",
+    "tests/test_openapi_schema",
+]
 lint.select = ["ALL"]
 lint.ignore = [
     "ANN401",   # Disallow typing.Any
@@ -129,6 +131,14 @@ lint.unfixable = []
 "src/spitzeisen/auth.py" = ["ARG002"]
 "src/spitzeisen/pagination.py" = ["ARG002"]
 "src/spitzeisen/limits.py" = ["ARG002"]
+"src/spitzeisen/codegen/cli.py" = [
+    "B008",    # Typer declares options in command function defaults
+    "FBT003",  # Typer's Option API takes boolean defaults positionally
+]
+"src/spitzeisen/codegen/parser/openapi.py" = [
+    "C901",    # Kept structurally aligned with upstream parser entry points
+    "SIM105",  # The explicit try/except mirrors upstream path-parameter sorting
+]
 "examples/*" = [
     "INP001",   # Require packages to have a __init__.py file
     "T201",     # Disallow print
@@ -143,6 +153,10 @@ max-args = 11   # Max arguments for functions - default 5
 pythonVersion = "3.12"
 pythonPlatform = "Linux"
 extraPaths = ["examples"]
+ignore = [
+    "src/spitzeisen/codegen/schema",
+    "tests/test_openapi_schema",
+]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"

@@ -114,13 +114,18 @@
         "properties": {
           "lon": {
             "type": "number",
+            "minimum": -180,
+            "maximum": 180,
             "description": "Longitude of the location."
           },
           "lat": {
             "type": "number",
+            "minimum": -90,
+            "maximum": 90,
             "description": "Latitude of the location."
           }
-        }
+        },
+        "required": ["lon", "lat"]
       },
       "WeatherCondition": {
         "type": "object",
@@ -141,7 +146,8 @@
             "type": "string",
             "description": "Weather icon identifier."
           }
-        }
+        },
+        "required": ["id", "main", "description", "icon"]
       },
       "WeatherMeasurements": {
         "type": "object",
@@ -168,6 +174,8 @@
           },
           "humidity": {
             "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
             "description": "Humidity percentage."
           },
           "sea_level": {
@@ -178,7 +186,8 @@
             "type": "integer",
             "description": "Atmospheric pressure at ground level in hPa, where available."
           }
-        }
+        },
+        "required": ["temp", "feels_like", "pressure", "humidity"]
       },
       "Wind": {
         "type": "object",
@@ -195,7 +204,8 @@
             "type": "number",
             "description": "Wind gust speed, where available."
           }
-        }
+        },
+        "required": ["speed", "deg"]
       },
       "PrecipitationVolume": {
         "type": "object",
@@ -204,16 +214,20 @@
             "type": "number",
             "description": "Precipitation volume for the preceding hour in mm/h."
           }
-        }
+        },
+        "required": ["1h"]
       },
       "Clouds": {
         "type": "object",
         "properties": {
           "all": {
             "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
             "description": "Cloudiness percentage."
           }
-        }
+        },
+        "required": ["all"]
       },
       "SystemMetadata": {
         "type": "object",
@@ -242,7 +256,8 @@
             "type": "integer",
             "description": "Sunset time as a Unix timestamp in UTC."
           }
-        }
+        },
+        "required": ["country", "sunrise", "sunset"]
       },
       "CurrentWeatherResponse": {
         "type": "object",
@@ -302,7 +317,8 @@
             "type": "integer",
             "description": "Internal response status code."
           }
-        }
+        },
+        "required": ["coord", "weather", "main", "dt", "timezone", "id", "name", "cod"]
       }
     }
   }

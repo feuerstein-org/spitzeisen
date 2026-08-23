@@ -113,21 +113,21 @@ Each endpoint has one scalar cost. steindamm's buckets satisfy the protocol with
 
 ## Code generation (optional)
 
-`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`, which compiles OpenAPI 3.0, 3.1, or 3.2
+`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`, which compiles OpenAPI 3.0 or 3.1
 plus a small manifest describing what OpenAPI cannot: what each call costs, how it paginates, and
-the public SDK names. A manifest-only API can generate the same endpoint/client surfaces with
-`declared_params`; set `generate_model: false` and provide its response model by hand.
+the public SDK names. Set `generate_model: false` and provide a response model by hand when the
+OpenAPI schema is incomplete or needs entirely custom behavior.
 
 Generation is one transaction, including Pydantic models and both client surfaces:
 
 ```bash
-spitzeisen-gen generate --spec-dir spec --package-root src/example_api
-spitzeisen-gen check --spec-dir spec --package-root src/example_api
+spitzeisen-gen generate --path spec/openapi.yaml --config spec/manifest.yaml --output-path src/example_api
+spitzeisen-gen check --path spec/openapi.yaml --config spec/manifest.yaml --output-path src/example_api
 ```
 
-`check` is suitable for CI and compares models as well as endpoints. Overlay and selected-spec
-intermediates are temporary rather than committed sources of truth. The compiler architecture and
-file-by-file responsibilities are documented in [docs/codegen-architecture.md](docs/codegen-architecture.md).
+Use `--url` instead of `--path` to fetch a document. `check` is suitable for CI and compares models
+as well as endpoints. The compiler architecture and file-by-file responsibilities are documented in
+[docs/codegen-architecture.md](docs/codegen-architecture.md).
 
 Endpoint generation separates replaceable implementation from public extension points. Given an
 endpoint named `splits`, it produces this layout for each surface:
@@ -205,9 +205,9 @@ select it with `spitzeisen-gen generate --base-class my_client.model_base.Client
 Generated GET endpoints honor OpenAPI query serialization for arrays and objects: `form`,
 `spaceDelimited`, and `pipeDelimited`, including `explode`. `deepObject` and `allowReserved`
 query serialization are not supported yet. Query values are always percent-encoded by httpx2.
-For a manifest-only API, set OpenAPI's `style` and `explode` on a declared query parameter when
-its wire representation differs from the defaults. Use `coercion_style` for Spitzeisen's
-caller-input coercions such as `date`, `comma_list`, or `comma_choice_list`.
+Set OpenAPI's `style` and `explode` on a query parameter when its wire representation differs from
+the defaults. Use manifest `coercion_style` for Spitzeisen's caller-input coercions such as `date`,
+`comma_list`, or `comma_choice_list`.
 
 For a generated endpoint that controls the number of records requested per page, name that
 vendor parameter explicitly. `max_page_size` may be omitted when the matching OpenAPI schema
