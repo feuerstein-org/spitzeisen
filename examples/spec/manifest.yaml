@@ -3,7 +3,7 @@ base_url: https://api.openweathermap.org
 package: weather_sdk
 client_name: WeatherApi
 
-endpoints:
+operations:
   current_weather:
     path: /data/2.5/weather
     method_name: get_current_weather
@@ -12,6 +12,7 @@ endpoints:
     docs_url: https://openweathermap.org/api/current?collection=current_forecast
     shape: single
     cost: 1
+    not_found: empty
 
     # Spitzeisen currently consumes JSON only, so the vendor's XML/HTML `mode` switch is not a
     # supported SDK argument. `appid` is represented by the OpenAPI security scheme and supplied
@@ -20,7 +21,14 @@ endpoints:
     params:
       lat:
         name: latitude
+        coercion_style: date
       lon:
         name: longitude
+        coercion_style: comma_list
       lang:
         name: language
+        coercion_style: comma_choice_list
+        literal: Test
+      units:
+        name: unittt
+        client_default: "'test'"

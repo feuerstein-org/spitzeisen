@@ -1,7 +1,7 @@
 """
 Protocol types retained after parsing the upstream OpenAPI models.
 
-The parser owns endpoints and their grouping, just as openapi-python-client does. This
+The parser owns operations and their grouping, just as openapi-python-client does. This
 module only contains the small, generator-neutral type tree used by Spitzeisen policy.
 """
 
@@ -18,7 +18,7 @@ SUCCESS_MAXIMUM = 300
 
 
 class HTTPMethod(StrEnum):
-    """HTTP methods parsed by openapi-python-client's endpoint workflow."""
+    """HTTP methods parsed by openapi-python-client's operation workflow."""
 
     GET = "get"
     PUT = "put"
@@ -28,10 +28,11 @@ class HTTPMethod(StrEnum):
     HEAD = "head"
     PATCH = "patch"
     TRACE = "trace"
+    # TODO: Add QUERY support?
 
 
-class ParameterLocation(StrEnum):
-    """Where an operation parameter is serialized."""
+class ParamLocationIR(StrEnum):
+    """Where an operation param is serialized."""
 
     QUERY = "query"
     HEADER = "header"
@@ -135,11 +136,11 @@ class MediaTypeIR:
 
 
 @dataclass(frozen=True, slots=True)
-class ParameterIR:
-    """One effective endpoint parameter."""
+class ParamIR:
+    """One effective operation param."""
 
     wire_name: str
-    location: ParameterLocation
+    location: ParamLocationIR
     required: bool
     schema: TypeIR | None
     content: tuple[MediaTypeIR, ...]
@@ -148,13 +149,15 @@ class ParameterIR:
     allow_reserved: bool
     description: str
     default: JSONValue
+    # Need this field because otherwise if the default is actually "None" we wont know
+    # since our field is also "None"
     has_default: bool
     deprecated: bool
 
 
 @dataclass(frozen=True, slots=True)
 class RequestBodyIR:
-    """An endpoint request body in each declared representation."""
+    """An operation request body in each declared representation."""
 
     required: bool
     description: str

@@ -3,16 +3,16 @@ spitzeisen: a neutral client framework for rate-limited REST APIs.
 
 Provides the machinery every API client re-implements — session lifecycle, retries with
 backoff, rate limiting, pagination, batch validation. httpx2 does the HTTP, confined to the
-request core so that no httpx2 type appears in a generated client's endpoint signatures.
+request core so that no httpx2 type appears in a generated client's operation signatures.
 Nothing here knows or cares what domain the API serves.
 
-Endpoint classes subclass `AsyncSpitzeisenApi` (or `SyncSpitzeisenApi` for the blocking surface)
-and describe calls with a `SpitzeisenEndpointSpec`.
+Generated operation classes subclass `AsyncSpitzeisenApi` (or `SyncSpitzeisenApi` for the
+blocking surface) and describe calls with a `SpitzeisenOperationSpec`.
 
 Naming: anything tied to one surface carries an `Async`/`Sync` prefix, and always a prefix —
 `AsyncSpitzeisenApi`/`SyncSpitzeisenApi`, `AsyncSpitzeisenConfig`/`SyncSpitzeisenConfig`,
 `AsyncLimiter`/`SyncLimiter`. An unmarked name is shared by both surfaces, which most of
-spitzeisen is: `SpitzeisenEndpointSpec`, the auth and pagination strategies, every exception.
+spitzeisen is: `SpitzeisenOperationSpec`, the auth and pagination strategies, every exception.
 Generated clients follow the same rule. The prefix is
 load-bearing rather than cosmetic — unasync converts `AsyncFoo` to `SyncFoo` on its own, so a
 type named this way needs no entry in `build_sync.py`'s replacement table.
@@ -24,7 +24,6 @@ from spitzeisen._sync.config import SyncSpitzeisenConfig
 from spitzeisen._sync.core import SyncSpitzeisenApi
 from spitzeisen.auth import AuthStrategy, BearerHeader, HeaderKey, NoAuth, QueryParamAuth
 from spitzeisen.concurrency import gather_bounded, map_bounded
-from spitzeisen.endpoints import SpitzeisenEndpointSpec
 from spitzeisen.exceptions import (
     AuthenticationError,
     HTTPError,
@@ -44,6 +43,7 @@ from spitzeisen.limits import (
     sync_single_bucket,
 )
 from spitzeisen.models import SpitzeisenModel
+from spitzeisen.operations import SpitzeisenOperationSpec
 from spitzeisen.pagination import (
     NoPagination,
     PageNumber,
@@ -79,9 +79,9 @@ __all__ = (
     "QueryParamAuth",
     "ResponseShapeError",
     "ServerError",
-    "SpitzeisenEndpointSpec",
     "SpitzeisenError",
     "SpitzeisenModel",
+    "SpitzeisenOperationSpec",
     "SyncLimiter",
     "SyncSpitzeisenApi",
     "SyncSpitzeisenConfig",

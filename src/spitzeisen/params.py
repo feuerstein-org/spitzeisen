@@ -1,5 +1,5 @@
 """
-Helpers for turning user-supplied arguments into wire-ready query parameters.
+Helpers for turning user-supplied arguments into wire-ready query params.
 
 Nothing here is API-specific: each helper takes the closed value set it should validate
 against, so a client library keeps ownership of its own `Literal` types.
@@ -27,7 +27,7 @@ class SerializedQueryParam:
 type QueryParams = list[SerializedQueryParam]
 
 
-def coerce_choice[T](value: T | None, literal: TypeForm[T], param_name: str) -> T | None:
+def coerce_choice[T](value: T | None, literal_type: TypeForm[T], param_name: str) -> T | None:
     """
     Validate `value` against the members of a Literal type (str or int members).
 
@@ -36,7 +36,7 @@ def coerce_choice[T](value: T | None, literal: TypeForm[T], param_name: str) -> 
     """
     if value is None:
         return None
-    allowed = cast("tuple[T, ...]", get_args(literal))
+    allowed = cast("tuple[T, ...]", get_args(literal_type))
     if value not in allowed:
         joined = ", ".join(str(member) for member in allowed)
         msg = f"Invalid {param_name} {value!r}. Allowed values: {joined}."
@@ -47,12 +47,12 @@ def coerce_choice[T](value: T | None, literal: TypeForm[T], param_name: str) -> 
 def require_value[T](value: T | None, param_name: str) -> T:
     """Return a required wire value, rejecting an absent one before a request is sent."""
     if value is None:
-        msg = f"Required parameter {param_name!r} was not provided."
+        msg = f"Required param {param_name!r} was not provided."
         raise ValueError(msg)
     return value
 
 
-def coerce_choices[T: str](values: Sequence[T] | None, literal: TypeForm[T], param_name: str) -> str | None:
+def coerce_choices[T: str](values: Sequence[T] | None, literal_type: TypeForm[T], param_name: str) -> str | None:
     """
     Validate a list of Literal members and join them into a comma-separated string.
 
@@ -61,7 +61,7 @@ def coerce_choices[T: str](values: Sequence[T] | None, literal: TypeForm[T], par
     """
     if not values:
         return None
-    allowed = cast("tuple[T, ...]", get_args(literal))
+    allowed = cast("tuple[T, ...]", get_args(literal_type))
     invalid = [value for value in values if value not in allowed]
     if invalid:
         joined = ", ".join(allowed)
@@ -75,7 +75,7 @@ def coerce_sort(sort: object, order: object) -> str:
     """
     Combine an already-coerced field and direction into the `field.direction` form.
 
-    Allowed values belong to the vendor's OpenAPI parameters or client-owned Literal types;
+    Allowed values belong to the vendor's OpenAPI params or client-owned Literal types;
     callers validate them with `coerce_choice` before combining them here.
     """
     if sort is None or sort == "" or order is None or order == "":
@@ -132,9 +132,9 @@ def serialize_query_param(
     param_name: str | None = None,
 ) -> QueryParams:
     """
-    Serialize one OpenAPI query parameter into the exact key/value pairs it requires as defined in spec or manifest.
+    Serialize one OpenAPI query param into the exact key/value pairs it requires as defined in spec or manifest.
 
-    Both, arrays and mappings are supported, if a required parameter is None, ValueError is raised.
+    Both, arrays and mappings are supported, if a required param is None, ValueError is raised.
 
     For example, an array with ``explode=True`` becomes repeated keys:
 
@@ -152,7 +152,7 @@ def serialize_query_param(
         # [SerializedQueryParam("role", "admin"), SerializedQueryParam("active", "true")]
     """
     if style not in _SUPPORTED_QUERY_STYLES:
-        msg = f"query parameter style {style!r} is unsupported"
+        msg = f"query param style {style!r} is unsupported"
         raise ValueError(msg)
     if value is None:
         if required:
@@ -185,7 +185,7 @@ def _serialize_array_or_scalar(
     style: QueryStyle,
     explode: bool,
 ) -> QueryParams:
-    """Serialize an OpenAPI scalar or array parameter."""
+    """Serialize an OpenAPI scalar or array param."""
     values = _values(value)
     if not values:
         return []
@@ -204,7 +204,7 @@ def _serialize_object(
     style: QueryStyle,
     explode: bool,
 ) -> QueryParams:
-    """Serialize a one-level OpenAPI object parameter."""
+    """Serialize a one-level OpenAPI object param."""
     members = [(str(key), _stringify(member)) for key, member in value.items()]
     if not members:
         return []
@@ -218,5 +218,5 @@ def _serialize_object(
 
 
 def build_header_params(raw: Mapping[str, object]) -> dict[str, str]:
-    """Build header values, where every parameter has exactly one name/value pair."""
+    """Build header values, where every param has exactly one name/value pair."""
     return {key: _stringify(value) for key, value in raw.items() if value is not None}

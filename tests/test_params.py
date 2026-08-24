@@ -1,4 +1,4 @@
-"""Parameter coercion: the helpers that turn user arguments into wire values."""
+"""Param coercion: the helpers that turn user arguments into wire values."""
 
 from datetime import date, datetime
 from typing import Literal, assert_type, cast
@@ -33,7 +33,7 @@ def test_coerce_choice_passes_none_through() -> None:
 
 
 def test_coerce_choice_lists_allowed_values_on_error() -> None:
-    """The error names the parameter and every value the API accepts."""
+    """The error names the param and every value the API accepts."""
     with pytest.raises(ValueError, match=r"Invalid colour 'purple'. Allowed values: red, green, blue."):
         coerce_choice("purple", Colour, "colour")
 
@@ -46,7 +46,7 @@ def test_require_value_preserves_present_falsy_values(value: object) -> None:
 
 def test_require_value_rejects_none() -> None:
     """A required value must not reach query-param construction as None."""
-    with pytest.raises(ValueError, match=r"Required parameter 'exchange' was not provided"):
+    with pytest.raises(ValueError, match=r"Required param 'exchange' was not provided"):
         require_value(None, "exchange")
 
 
@@ -99,7 +99,7 @@ def test_coerce_date_rejects_a_non_iso_string() -> None:
 
 
 def test_serialize_query_param_drops_none_and_normalizes_scalars() -> None:
-    """None disappears and scalar values are normalized into one ordered parameter list."""
+    """None disappears and scalar values are normalized into one ordered param list."""
     params = [
         *serialize_query_param(None, name="absent"),
         *serialize_query_param(value=True, name="active"),
@@ -159,8 +159,8 @@ def test_serialize_query_param_rejects_deep_object() -> None:
 
 
 def test_serialize_query_param_rejects_a_required_empty_array() -> None:
-    """An empty collection cannot silently satisfy a required query parameter."""
-    with pytest.raises(ValueError, match=r"Required parameter 'symbol' was not provided"):
+    """An empty collection cannot silently satisfy a required query param."""
+    with pytest.raises(ValueError, match=r"Required param 'symbol' was not provided"):
         serialize_query_param([], name="symbol", required=True)
 
 

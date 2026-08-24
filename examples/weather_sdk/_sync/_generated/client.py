@@ -16,23 +16,23 @@ if TYPE_CHECKING:
 
 
 class SyncWeatherApiBase:
-    """Own and share one configuration across every generated endpoint API."""
+    """Own and share one configuration across every generated operation API."""
 
     def __init__(self, config: SyncSpitzeisenConfig) -> None:
-        """Build every endpoint API around the same connection-level configuration."""
+        """Build every operation API around the same connection-level configuration."""
         self.config = config
 
         self.current_weather_api = SyncCurrentWeatherApi(config)
 
-        self._endpoint_apis = (self.current_weather_api,)
+        self._operation_apis = (self.current_weather_api,)
 
     def __enter__(self) -> Self:
-        """Enter every endpoint API while sharing one lazily-created HTTP client."""
-        for endpoint_api in self._endpoint_apis:
-            endpoint_api.__enter__()
+        """Enter every operation API while sharing one lazily-created HTTP client."""
+        for operation_api in self._operation_apis:
+            operation_api.__enter__()
         return self
 
     def __exit__(self, *args: object) -> None:
-        """Exit every endpoint API and close an owned HTTP client after the last holder."""
-        for endpoint_api in reversed(self._endpoint_apis):
-            endpoint_api.__exit__(*args)
+        """Exit every operation API and close an owned HTTP client after the last holder."""
+        for operation_api in reversed(self._operation_apis):
+            operation_api.__exit__(*args)

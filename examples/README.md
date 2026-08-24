@@ -12,7 +12,7 @@ spec/manifest.yaml               SDK semantics OpenAPI cannot express
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
 weather_sdk/models/current_weather.py create-once public model with a custom validator
-weather_sdk/*/_generated/*.py    regenerated endpoint and aggregate-client bases
+weather_sdk/*/_generated/*.py    regenerated operation and aggregate-client bases
 weather_sdk/_async/*.py          create-once public async extension classes
 weather_sdk/_sync/*.py           create-once public sync extension classes
 weather_sdk/__init__.py          handwritten package exports
@@ -27,15 +27,15 @@ mise run check-codegen
 mise run demo-example
 ```
 
-`codegen` hydrates the vendor input into the vendored OpenAPI model, compiles endpoint policy,
-generates models, and writes both endpoint surfaces in one transaction. No intermediate is kept as
+`codegen` hydrates the vendor input into the vendored OpenAPI model, compiles operation policy,
+generates models, and writes both operation surfaces in one transaction. No intermediate is kept as
 a second source of truth.
 
-Files named or nested under `_generated` are replaced on every run. Public model, endpoint, and
+Files named or nested under `_generated` are replaced on every run. Public model, operation, and
 client modules are created only when absent, so adding custom SDK behaviour there is safe.
 `models/current_weather.py` demonstrates this with a validator requiring a successful observation
 to contain at least one weather condition. The check task verifies generated models, replaceable
-endpoint/client bases, public exports, and the presence of every public extension module.
+operation/client bases, public exports, and the presence of every public extension module.
 
 Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
 remain wire-only, and no repeated `model_config` block is emitted into each class.

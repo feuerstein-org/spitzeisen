@@ -1,7 +1,7 @@
 """
-A factory for endpoint instances whose I/O is stubbed.
+A factory for operation instances whose I/O is stubbed.
 
-Endpoint classes are mostly parameter coercion, envelope handling and validation. This builds
+Operation classes are mostly param coercion, envelope handling and validation. This builds
 a real instance of one with `_request` and `_get_all_pages` replaced, so those behaviours can
 be tested without a session, a limiter or a URL in sight. It detects whether the class is
 awaitable or blocking and stubs accordingly, so one test body can cover both surfaces.
@@ -21,14 +21,14 @@ class MockApiConfig:
     """What the stubbed I/O helpers should return."""
 
     base_url: str = "https://fake.test"
-    # Records returned by a stubbed `_get_all_pages` (list endpoints).
+    # Records returned by a stubbed `_get_all_pages` (collection operations).
     pages: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
-    # Decoded body returned by a stubbed `_request` (single-resource endpoints).
+    # Decoded body returned by a stubbed `_request` (single-resource operations).
     result: Any = None
 
 
 class MockApiFactory:
-    """Creates endpoint instances with their request path stubbed out."""
+    """Create operation instances with their request path stubbed out."""
 
     def __init__(self, mocker: Any) -> None:
         """Bind pytest-mock's `mocker` fixture."""
@@ -45,7 +45,7 @@ class MockApiFactory:
 
         `kwargs` are forwarded to `MockApiConfig` when no config is given. Returns the
         instance and a namespace holding the two stubs, so tests can assert on the arguments
-        the endpoint passed down.
+        the operation passed down.
         """
         if config is None:
             config = MockApiConfig(**kwargs)

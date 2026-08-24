@@ -2,8 +2,8 @@
 Parse typed OpenAPI objects into Spitzeisen generator data.
 
 The control flow deliberately follows ``openapi_python_client.parser.openapi``: hydrate the
-vendored Pydantic model, build component registries, create endpoints from operations, add
-Path Item parameters afterwards, sort path parameters, and collect parser warnings.
+vendored Pydantic model, build component registries, create parsed operations, add
+Path Item params afterwards, sort path params, and collect parser warnings.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from typing import Any, NewType, cast
 from urllib.parse import unquote, urlparse
 
-from pydantic import ValidationError
-
 from spitzeisen.codegen import schema as oai
 from spitzeisen.codegen.ir import (
     ArrayType,
@@ -25,8 +23,8 @@ from spitzeisen.codegen.ir import (
     LiteralType,
     MediaTypeIR,
     ObjectType,
-    ParameterIR,
-    ParameterLocation,
+    ParamIR,
+    ParamLocationIR,
     PrimitiveKind,
     PrimitiveType,
     ReferenceType,
@@ -38,7 +36,7 @@ from spitzeisen.codegen.ir import (
     UnionType,
     UnknownType,
 )
-from spitzeisen.codegen.parser.errors import GeneratorError, ParameterError, ParseError, PropertyError
+from spitzeisen.codegen.parser.errors import ParamError, ParseError, PropertyError
 
 _PATH_PARAM_REGEX = re.compile(r"{([a-zA-Z_-][a-zA-Z0-9_-]*)}")
 _METHODS = tuple(HTTPMethod)
@@ -60,63 +58,63 @@ def get_reference_simple_name(ref_path: str) -> str:
 
 
 @dataclass
-class EndpointCollection:
-    """Endpoints grouped under the first operation tag."""
+class OperationCollection:
+    """Parsed operations grouped under the first operation tag."""
 
     tag: str
-    endpoints: list[Endpoint] = field(default_factory=list["Endpoint"])
+    operations: list[ParsedOperation] = field(default_factory=list["ParsedOperation"])
     parse_errors: list[ParseError] = field(default_factory=list[ParseError])
 
     @staticmethod
     def from_data(
         *,
         data: dict[str, oai.PathItem],
-        parameter_components: dict[ReferencePath, oai.Parameter],
+        param_components: dict[ReferencePath, oai.Param],
         request_bodies: dict[str, oai.RequestBody | oai.Reference],
         responses: dict[str, oai.Response | oai.Reference],
         schema_components: dict[str, oai.Schema | oai.Reference],
-    ) -> dict[str, EndpointCollection]:
-        """Parse OpenAPI paths into endpoint collections by tag."""
-        endpoints_by_tag: dict[str, EndpointCollection] = {}
+    ) -> dict[str, OperationCollection]:
+        """Parse OpenAPI paths into operation collections by tag."""
+        operations_by_tag: dict[str, OperationCollection] = {}
         for path, path_data in data.items():
             for method in _METHODS:
                 operation = getattr(path_data, method.value)
                 if operation is None:
                     continue
                 tags = (operation.tags or ["default"])[:1]
-                collections = [endpoints_by_tag.setdefault(tag, EndpointCollection(tag=tag)) for tag in tags]
-                endpoint = Endpoint.from_data(
+                collections = [operations_by_tag.setdefault(tag, OperationCollection(tag=tag)) for tag in tags]
+                operation = ParsedOperation.from_data(
                     data=operation,
                     path=path,
                     method=method,
-                    parameter_components=parameter_components,
+                    param_components=param_components,
                     request_bodies=request_bodies,
                     responses=responses,
                     schema_components=schema_components,
                 )
-                if not isinstance(endpoint, ParseError):
-                    endpoint = endpoint.add_parameters(
+                if not isinstance(operation, ParseError):
+                    operation = operation.add_params(
                         data=path_data,
-                        parameter_components=parameter_components,
+                        param_components=param_components,
                         schema_components=schema_components,
                     )
-                if not isinstance(endpoint, ParseError):
-                    endpoint = endpoint.sort_parameters()
-                if isinstance(endpoint, ParseError):
-                    endpoint.header = (
+                if not isinstance(operation, ParseError):
+                    operation = operation.sort_params()
+                if isinstance(operation, ParseError):
+                    operation.header = (
                         f"WARNING parsing {method.value.upper()} {path} within {'/'.join(tags)}. "
-                        "Endpoint will not be generated."
+                        "Operation will not be generated."
                     )
                     for collection in collections:
-                        collection.parse_errors.append(endpoint)
+                        collection.parse_errors.append(operation)
                     continue
-                for parse_error in endpoint.errors:
+                for parse_error in operation.errors:
                     parse_error.header = f"WARNING parsing {method.value.upper()} {path} within {'/'.join(tags)}."
                     for collection in collections:
                         collection.parse_errors.append(parse_error)
                 for collection in collections:
-                    collection.endpoints.append(endpoint)
-        return endpoints_by_tag
+                    collection.operations.append(operation)
+        return operations_by_tag
 
 
 def generate_operation_id(*, path: str, method: str) -> str:
@@ -127,8 +125,8 @@ def generate_operation_id(*, path: str, method: str) -> str:
 
 
 @dataclass
-class Endpoint:
-    """One parsed endpoint, shaped like openapi-python-client's parser object."""
+class ParsedOperation:
+    """One normalized OpenAPI operation carrying protocol IR for manifest compilation."""
 
     path: str
     method: HTTPMethod
@@ -137,10 +135,10 @@ class Endpoint:
     requires_security: bool
     tags: tuple[str, ...]
     summary: str = ""
-    query_parameters: list[ParameterIR] = field(default_factory=list[ParameterIR])
-    path_parameters: list[ParameterIR] = field(default_factory=list[ParameterIR])
-    header_parameters: list[ParameterIR] = field(default_factory=list[ParameterIR])
-    cookie_parameters: list[ParameterIR] = field(default_factory=list[ParameterIR])
+    query_params: list[ParamIR] = field(default_factory=list[ParamIR])
+    path_params: list[ParamIR] = field(default_factory=list[ParamIR])
+    header_params: list[ParamIR] = field(default_factory=list[ParamIR])
+    cookie_params: list[ParamIR] = field(default_factory=list[ParamIR])
     responses: list[ResponseIR] = field(default_factory=list[ResponseIR])
     request_body: RequestBodyIR | None = None
     errors: list[ParseError] = field(default_factory=list[ParseError])
@@ -148,72 +146,72 @@ class Endpoint:
     security: tuple[dict[str, tuple[str, ...]], ...] = ()
 
     @property
-    def parameters(self) -> tuple[ParameterIR, ...]:
-        """Return parameters in the same location order as upstream."""
+    def params(self) -> tuple[ParamIR, ...]:
+        """Return params in the same location order as upstream."""
         return tuple(
-            self.path_parameters + self.query_parameters + self.header_parameters + self.cookie_parameters,
+            self.path_params + self.query_params + self.header_params + self.cookie_params,
         )
 
-    def add_parameters(
+    def add_params(
         self,
         *,
         data: oai.Operation | oai.PathItem,
-        parameter_components: dict[ReferencePath, oai.Parameter],
+        param_components: dict[ReferencePath, oai.Param],
         schema_components: dict[str, oai.Schema | oai.Reference],
-    ) -> Endpoint | ParseError:
-        """Add parameters, allowing earlier operation-level definitions to take precedence."""
-        if data.parameters is None:
+    ) -> ParsedOperation | ParseError:
+        """Add params, allowing earlier operation-level definitions to take precedence."""
+        if data.params is None:
             return self
-        endpoint = deepcopy(self)
-        unique_parameters: set[tuple[str, oai.ParameterLocation]] = set()
-        parameters_by_location = {
-            oai.ParameterLocation.QUERY: endpoint.query_parameters,
-            oai.ParameterLocation.PATH: endpoint.path_parameters,
-            oai.ParameterLocation.HEADER: endpoint.header_parameters,
-            oai.ParameterLocation.COOKIE: endpoint.cookie_parameters,
+        operation = deepcopy(self)
+        unique_params: set[tuple[str, oai.ParamLocation]] = set()
+        params_by_location = {
+            oai.ParamLocation.QUERY: operation.query_params,
+            oai.ParamLocation.PATH: operation.path_params,
+            oai.ParamLocation.HEADER: operation.header_params,
+            oai.ParamLocation.COOKIE: operation.cookie_params,
         }
-        for parameter_data in data.parameters:
-            parameter = _parameter_from_reference(parameter_data, parameter_components)
-            if isinstance(parameter, ParseError):
-                return parameter
-            if parameter.param_schema is None:
+        for param_data in data.params:
+            param = _param_from_reference(param_data, param_components)
+            if isinstance(param, ParseError):
+                return param
+            if param.param_schema is None:
                 continue
-            identity = (parameter.name, parameter.param_in)
-            if identity in unique_parameters:
+            identity = (param.name, param.param_in)
+            if identity in unique_params:
                 return ParseError(
                     data=data,
                     detail=(
-                        "Parameters MUST NOT contain duplicates. A unique parameter is defined by a combination "
-                        f"of a name and location. Duplicated parameters named `{parameter.name}` detected in "
-                        f"`{parameter.param_in}`."
+                        "Params MUST NOT contain duplicates. A unique param is defined by a combination "
+                        f"of a name and location. Duplicated params named `{param.name}` detected in "
+                        f"`{param.param_in}`."
                     ),
                 )
-            unique_parameters.add(identity)
-            existing = parameters_by_location[parameter.param_in]
-            if any(item.wire_name == parameter.name for item in existing):
+            unique_params.add(identity)
+            existing = params_by_location[param.param_in]
+            if any(item.wire_name == param.name for item in existing):
                 continue
-            lowered = _lower_parameter(parameter, schema_components)
+            lowered = _lower_param(param, schema_components)
             if isinstance(lowered, ParseError):
                 return ParseError(
-                    detail=f"cannot parse parameter of endpoint {endpoint.name}: {lowered.detail}",
+                    detail=f"cannot parse param of operation {operation.name}: {lowered.detail}",
                     data=lowered.data,
                 )
             existing.append(lowered)
-        return endpoint
+        return operation
 
-    def sort_parameters(self) -> Endpoint | ParseError:
-        """Sort path parameters into path-template order and validate the template."""
-        endpoint = deepcopy(self)
-        parameters_from_path = re.findall(_PATH_PARAM_REGEX, endpoint.path)
+    def sort_params(self) -> ParsedOperation | ParseError:
+        """Sort path params into path-template order and validate the template."""
+        operation = deepcopy(self)
+        params_from_path = re.findall(_PATH_PARAM_REGEX, operation.path)
         try:
-            endpoint.path_parameters.sort(key=lambda parameter: parameters_from_path.index(parameter.wire_name))
+            operation.path_params.sort(key=lambda param: params_from_path.index(param.wire_name))
         except ValueError:
             pass
-        if parameters_from_path != [parameter.wire_name for parameter in endpoint.path_parameters]:
+        if params_from_path != [param.wire_name for param in operation.path_params]:
             return ParseError(
-                detail=f"Incorrect path templating for {endpoint.path} (Path parameters do not match with path)",
+                detail=f"Incorrect path templating for {operation.path} (Path params do not match with path)",
             )
-        return endpoint
+        return operation
 
     @staticmethod
     def from_data(
@@ -221,13 +219,13 @@ class Endpoint:
         data: oai.Operation,
         path: str,
         method: HTTPMethod,
-        parameter_components: dict[ReferencePath, oai.Parameter],
+        param_components: dict[ReferencePath, oai.Param],
         request_bodies: dict[str, oai.RequestBody | oai.Reference],
         responses: dict[str, oai.Response | oai.Reference],
         schema_components: dict[str, oai.Schema | oai.Reference],
-    ) -> Endpoint | ParseError:
-        """Construct an endpoint from one typed OpenAPI operation."""
-        endpoint = Endpoint(
+    ) -> ParsedOperation | ParseError:
+        """Construct a parsed operation from one typed OpenAPI operation."""
+        operation = ParsedOperation(
             path=path,
             method=method,
             summary=data.summary or "",
@@ -238,9 +236,9 @@ class Endpoint:
             deprecated=data.deprecated,
             security=tuple({name: tuple(scopes) for name, scopes in item.items()} for item in (data.security or [])),
         )
-        result = endpoint.add_parameters(
+        result = operation.add_params(
             data=data,
-            parameter_components=parameter_components,
+            param_components=param_components,
             schema_components=schema_components,
         )
         if isinstance(result, ParseError):
@@ -274,126 +272,120 @@ class Endpoint:
 
 
 @dataclass
-class GeneratorData:
-    """All parsed data needed by Spitzeisen's generation policy."""
+class ParsedOpenAPI:
+    """The parsed OpenAPI metadata, operations, and recoverable parser warnings."""
 
     title: str
     description: str | None
     version: str
     errors: list[ParseError]
-    endpoint_collections_by_tag: dict[str, EndpointCollection]
+    operation_collections_by_tag: dict[str, OperationCollection]
 
     @property
-    def endpoints(self) -> tuple[Endpoint, ...]:
-        """Return the flat endpoint sequence used by manifest selection."""
+    def operations(self) -> tuple[ParsedOperation, ...]:
+        """Return the flat operation sequence used by manifest selection."""
         return tuple(
-            endpoint for collection in self.endpoint_collections_by_tag.values() for endpoint in collection.endpoints
+            operation
+            for collection in self.operation_collections_by_tag.values()
+            for operation in collection.operations
         )
 
-    def operation_at(self, path: str, method: HTTPMethod) -> Endpoint | None:
-        """Find an endpoint by wire path and method."""
-        return next((item for item in self.endpoints if item.path == path and item.method is method), None)
+    def operation_at(self, path: str, method: HTTPMethod) -> ParsedOperation | None:
+        """Find an operation by wire path and method."""
+        return next((item for item in self.operations if item.path == path and item.method is method), None)
 
-    def operation_named(self, operation_id: str) -> Endpoint | None:
-        """Find an endpoint by explicit or generated operation ID."""
-        return next((item for item in self.endpoints if item.name == operation_id), None)
+    def operation_named(self, operation_id: str) -> ParsedOperation | None:
+        """Find an operation by explicit or generated operation ID."""
+        return next((item for item in self.operations if item.name == operation_id), None)
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> GeneratorData | GeneratorError:
+    def from_dict(data: dict[str, Any]) -> ParsedOpenAPI:
         """Hydrate the vendored model and parse it using the upstream workflow."""
-        try:
-            openapi = oai.OpenAPI.model_validate(data)
-        except ValidationError as err:
-            detail = str(err)
-            if "swagger" in data:
-                detail = (
-                    "You may be trying to use a Swagger document; this is not supported by this project.\n\n" + detail
-                )
-            return GeneratorError(header="Failed to parse OpenAPI document", detail=detail)
+        openapi = oai.OpenAPI.model_validate(data)
 
         components = openapi.components
         schema_components = (components and components.schemas) or {}
-        parameter_components, errors = _build_parameters((components and components.parameters) or {})
+        param_components, errors = _build_params((components and components.params) or {})
         request_bodies = (components and components.requestBodies) or {}
         responses = (components and components.responses) or {}
-        endpoint_collections = EndpointCollection.from_data(
+        operation_collections = OperationCollection.from_data(
             data=openapi.paths,
-            parameter_components=parameter_components,
+            param_components=param_components,
             request_bodies=request_bodies,
             responses=responses,
             schema_components=schema_components,
         )
-        return GeneratorData(
+        return ParsedOpenAPI(
             title=openapi.info.title,
             description=openapi.info.description,
             version=openapi.info.version,
-            endpoint_collections_by_tag=endpoint_collections,
+            operation_collections_by_tag=operation_collections,
             errors=errors,
         )
 
 
-def _build_parameters(
-    components: dict[str, oai.Reference | oai.Parameter],
-) -> tuple[dict[ReferencePath, oai.Parameter], list[ParseError]]:
-    """Build the reusable parameter registry using upstream's accepted subset."""
-    parameters: dict[ReferencePath, oai.Parameter] = {}
+def _build_params(
+    components: dict[str, oai.Reference | oai.Param],
+) -> tuple[dict[ReferencePath, oai.Param], list[ParseError]]:
+    """Build the reusable param registry using upstream's accepted subset."""
+    params: dict[ReferencePath, oai.Param] = {}
     errors: list[ParseError] = []
     for name, data in components.items():
         if isinstance(data, oai.Reference):
-            errors.append(ParameterError(data=data, detail="Reference parameters are not supported."))
+            errors.append(ParamError(data=data, detail="Reference params are not supported."))
             continue
         path = parse_reference_path(f"#/components/parameters/{name}")
         if isinstance(path, ParseError):
-            errors.append(ParameterError(detail=path.detail, data=data))
+            errors.append(ParamError(detail=path.detail, data=data))
             continue
-        parameters[path] = data
-    return parameters, errors
+        params[path] = data
+    return params, errors
 
 
-def _parameter_from_reference(
-    parameter: oai.Reference | oai.Parameter,
-    parameters: dict[ReferencePath, oai.Parameter],
-) -> oai.Parameter | ParameterError:
-    """Resolve one parameter reference from the component registry."""
-    if isinstance(parameter, oai.Parameter):
-        return parameter
-    path = parse_reference_path(parameter.ref)
+def _param_from_reference(
+    param: oai.Reference | oai.Param,
+    params: dict[ReferencePath, oai.Param],
+) -> oai.Param | ParamError:
+    """Resolve one param reference from the component registry."""
+    if isinstance(param, oai.Param):
+        return param
+    path = parse_reference_path(param.ref)
     if isinstance(path, ParseError):
-        return ParameterError(detail=path.detail)
-    resolved = parameters.get(path)
+        return ParamError(detail=path.detail)
+    resolved = params.get(path)
     if resolved is None:
-        return ParameterError(detail=f"Reference `{path}` not found.")
+        return ParamError(detail=f"Reference `{path}` not found.")
     return resolved
 
 
-def _lower_parameter(
-    parameter: oai.Parameter,
+def _lower_param(
+    param: oai.Param,
     schema_components: dict[str, oai.Schema | oai.Reference],
-) -> ParameterIR | PropertyError:
-    """Lower the schema-bearing part of a typed OpenAPI parameter."""
-    assert parameter.param_schema is not None  # noqa: S101 - caller follows upstream's schema-less skip
-    schema = lower_schema_type(parameter.param_schema, schema_components)
+) -> ParamIR | PropertyError:
+    """Lower the schema-bearing part of a typed OpenAPI param."""
+    assert param.param_schema is not None  # noqa: S101 - caller follows upstream's schema-less skip
+    schema = lower_schema_type(param.param_schema, schema_components)
     if isinstance(schema, PropertyError):
         return schema
-    content = _lower_content(parameter.content or {}, schema_components)
+    content = _lower_content(param.content or {}, schema_components)
     if isinstance(content, PropertyError):
         return content
-    param_schema = parameter.param_schema
+    param_schema = param.param_schema
     has_default = isinstance(param_schema, oai.Schema) and "default" in param_schema.model_fields_set
     default = cast("Any", param_schema.default) if isinstance(param_schema, oai.Schema) else None
-    return ParameterIR(
-        wire_name=parameter.name,
-        location=ParameterLocation(parameter.param_in.value),
-        required=parameter.required,
+    return ParamIR(
+        wire_name=param.name,
+        location=ParamLocationIR(param.param_in.value),
+        required=param.required,
         schema=schema,
         content=content,
-        style=parameter.style,
-        explode=parameter.explode,
-        allow_reserved=parameter.allowReserved,
-        description=parameter.description or "",
+        style=param.style,
+        explode=param.explode,
+        allow_reserved=param.allowReserved,
+        description=param.description or "",
         default=default,
         has_default=has_default,
-        deprecated=parameter.deprecated,
+        deprecated=param.deprecated,
     )
 
 
@@ -475,7 +467,7 @@ def _lower_request_body(
         content.append(MediaTypeIR(media_type=content_type, schema=schema))
     if not content and errors:
         return ParseError(
-            header="Endpoint requires a body, but none were parseable.",
+            header="Operation requires a body, but none were parseable.",
             detail="\n".join(error.detail or "" for error in errors),
             data=resolved,
         )

@@ -15,7 +15,7 @@ from spitzeisen import (
     NoPagination,
     QueryParamAuth,
     ResponseShapeError,
-    SpitzeisenEndpointSpec,
+    SpitzeisenOperationSpec,
     async_single_bucket,
     extract_records,
     gather_bounded,
@@ -29,7 +29,7 @@ from spitzeisen.testing import MockApiFactory
 if TYPE_CHECKING:
     from spitzeisen.pagination import JsonObject, JsonValue
 
-RECORDS = SpitzeisenEndpointSpec(path="/v1/records", pagination=NoPagination("results"))
+RECORDS = SpitzeisenOperationSpec(path="/v1/records", pagination=NoPagination("results"))
 
 
 @pytest.mark.parametrize(
@@ -220,22 +220,22 @@ def test_map_bounded_rejects_a_useless_limit() -> None:
 
 
 class Records(AsyncSpitzeisenApi):
-    """An endpoint class whose logic can be tested without any session."""
+    """An operation class whose logic can be tested without any session."""
 
     async def list_records(self, *, active: bool = True) -> list[JsonObject]:
         """Return records, passing the filter down to the request path."""
         return await self._get_all_pages(
             RECORDS,
-            serialize_query_param(str(active).lower(), name="active"),
+            params=serialize_query_param(str(active).lower(), name="active"),
         )
 
 
 async def test_mock_api_factory_stubs_the_request_path(mocker: object) -> None:
-    """Endpoint logic is testable without a session, a limiter or a URL."""
+    """Operation logic is testable without a session, a limiter or a URL."""
     factory = MockApiFactory(mocker)
     api, mocks = factory.create(Records, pages=[{"id": "a"}])
 
     records = await api.list_records(active=False)
 
     assert records == [{"id": "a"}]
-    assert mocks.get_all_pages.call_args.args[1] == serialize_query_param("false", name="active")
+    assert mocks.get_all_pages.call_args.kwargs["params"] == serialize_query_param("false", name="active")

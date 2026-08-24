@@ -7,7 +7,7 @@ class SecurityScheme(BaseModel):
     """
     Defines a security scheme that can be used by the operations.
     Supported schemes are HTTP authentication,
-    an API key (either as a header, a cookie parameter or as a query parameter),
+    an API key (either as a header, a cookie param or as a query param),
     OAuth2's common flows (implicit, password, client credentials and authorization code)
     as defined in [RFC6749](https://tools.ietf.org/html/rfc6749),
     and [OpenID Connect Discovery](https://tools.ietf.org/html/draft-ietf-oauth-discovery-06).

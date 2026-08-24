@@ -1,1 +1,1 @@
-"""Synchronous generated implementation; do not edit."""
+"""Synchronous generated implementation, do not edit."""

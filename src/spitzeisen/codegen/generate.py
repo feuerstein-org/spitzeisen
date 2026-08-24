@@ -3,13 +3,13 @@ Rendering the generated client.
 
 One template produces both surfaces: the awaitable and blocking variants differ by more than
 `async`/`await` — the usage example and the wording of the summary have to change too — and a
-mechanical source transform cannot rewrite a docstring. That is why endpoints are generated
+mechanical source transform cannot rewrite a docstring. That is why operations are generated
 twice rather than desugared, while spitzeisen's own hand-written core uses unasync.
 
 Regenerated implementation modules expose `...Base` classes. Beside each one, generation
 scaffolds a public subclass exactly once; that public module belongs to the client package and
 is never overwritten. Aggregate client wiring follows the same generated-base/public-subclass
-split, so adding an endpoint refreshes the wiring without erasing hand-written behaviour.
+split, so adding an operation refreshes the wiring without erasing hand-written behaviour.
 """
 
 from __future__ import annotations
@@ -24,17 +24,13 @@ from typing import TYPE_CHECKING, Any
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from spitzeisen.codegen.parser import GeneratorData
-from spitzeisen.codegen.parser.errors import GeneratorError
-from spitzeisen.codegen.policy import ClientPlan, EndpointPlan, ParameterPlan, compile_manifest
-
 if TYPE_CHECKING:
-    from spitzeisen.codegen.manifest import Endpoint, Manifest
+    from spitzeisen.codegen.policy import ClientPlan, OperationPlan, ParamPlan
 
 TEMPLATES = Path(__file__).parent / "templates"
 
 # Only the styles spitzeisen ships. A vendor paginating some other way declares `none` here
-# and passes its own strategy on the SpitzeisenEndpointSpec; see `spitzeisen.pagination`.
+# and passes its own strategy on the SpitzeisenOperationSpec; see `spitzeisen.pagination`.
 PAGINATION_CLASSES = {
     "none": "NoPagination",
     "page_number": "PageNumber",
@@ -60,16 +56,9 @@ def formatted_module(path: Path, source: str, *, create_once: bool = False) -> G
     return GeneratedModule(path, format_python(source, str(path)), create_once=create_once)
 
 
-def prune_spec(spec: dict[str, Any], manifest: Manifest | ClientPlan) -> dict[str, Any]:
-    """
-    Narrow a vendor document to the paths a manifest actually implements.
-
-    Vendors routinely publish an order of magnitude more operations than any one client
-    wraps, and generating models for all of them produces thousands of lines nobody
-    imports, plus name collisions when two unrelated endpoints want the same schema name.
-    """
-    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
-    wanted = {endpoint.path for endpoint in endpoints if endpoint.generate_model}
+def prune_spec(spec: dict[str, Any], client: ClientPlan) -> dict[str, Any]:
+    """Narrow a vendor document to the paths a manifest actually implements."""
+    wanted = {operation.path for operation in client.operations if operation.generate_model}
     return {
         **spec,
         "paths": {path: item for path, item in spec.get("paths", {}).items() if path in wanted},
@@ -77,14 +66,7 @@ def prune_spec(spec: dict[str, Any], manifest: Manifest | ClientPlan) -> dict[st
 
 
 def format_python(source: str, filename: str = "generated.py") -> str:
-    """
-    Run generated source through ruff, exactly as the rest of the tree is formatted.
-
-    Formatting belongs to generation rather than to whoever writes the file: `check` compares
-    what generation produces against what is committed, and those two can only be compared if
-    both have been through the same formatter. Unused imports are pruned here too, which lets
-    the template emit a generous import block instead of computing the exact set in Jinja.
-    """
+    """Run generated source through ruff, exactly as the rest of the tree is formatted."""
     for argv in (
         ["ruff", "check", "--select", "I,F401", "--fix", "--quiet", "--stdin-filename", filename, "-"],
         ["ruff", "format", "--quiet", "--stdin-filename", filename, "-"],
@@ -105,21 +87,15 @@ def wrap_arg(description: str, name: str) -> str:
     )
 
 
-def render_path_kwargs(path_params: tuple[ParameterPlan, ...]) -> str:
-    """
-    Render path values as keyword arguments to the request helper.
-
-    A vendor is free to call a placeholder `{from}`, which cannot be a Python keyword
-    argument, so any such name forces the whole group into dictionary-unpacking form. The
-    common case stays readable.
-    """
+def render_path_kwargs(path_params: tuple[ParamPlan, ...]) -> str:
+    """Validate and render path values as keyword arguments."""
     if not path_params:
         return ""
     unsafe = [p for p in path_params if keyword.iskeyword(p.wire_name) or not p.wire_name.isidentifier()]
     if unsafe:
-        pairs = ", ".join(f'"{p.wire_name}": {p.coercion}' for p in path_params)
+        pairs = ", ".join(f'"{p.wire_name}": require_value({p.coercion}, "{p.name}")' for p in path_params)
         return f"**{{{pairs}}},"
-    return "".join(f"\n            {p.wire_name}={p.coercion}," for p in path_params)
+    return "".join(f'\n            {p.wire_name}=require_value({p.coercion}, "{p.name}"),' for p in path_params)
 
 
 def environment() -> Environment:
@@ -139,38 +115,36 @@ def environment() -> Environment:
     return env
 
 
-def render_endpoint(
+def render_operation(
     client: ClientPlan,
-    endpoint: EndpointPlan,
+    operation: OperationPlan,
     *,
     is_async: bool,
 ) -> str:
-    """Render one endpoint module for one surface."""
-    template = "endpoint.py.jinja" if endpoint.shape == "collection" else "endpoint_single.py.jinja"
+    """Render one operation module for one surface."""
+    template = "operation.py.jinja" if operation.shape == "collection" else "operation_single.py.jinja"
     return (
         environment()
         .get_template(template)
         .render(
-            ep=endpoint,
-            params=endpoint.params,
-            query_params=endpoint.query_params,
-            header_params=endpoint.header_params,
-            path_params=endpoint.path_params,
-            example_args=endpoint.example_args,
-            path_kwargs=render_path_kwargs(endpoint.path_params),
-            cost=endpoint.cost,
-            sorting=endpoint.sorting,
-            page_size=endpoint.page_size,
-            pagination_class=PAGINATION_CLASSES[endpoint.pagination],
-            helpers=endpoint.helpers,
-            # Whether an absent resource is a return value or an exception. Resolved here so
-            # the policy never reaches runtime: it picks which core helper to call, and
-            # `_request` keeps its unconditional "a body, or an exception" contract.
-            optional=endpoint.not_found == "empty",
+            operation=operation,
+            params=operation.params,
+            query_params=operation.query_params,
+            header_params=operation.header_params,
+            path_params=operation.path_params,
+            example_args=operation.example_args,
+            path_kwargs=render_path_kwargs(operation.path_params),
+            cost=operation.cost,
+            sorting=operation.sorting,
+            page_size=operation.page_size,
+            pagination_class=PAGINATION_CLASSES[operation.pagination],
+            helpers=operation.helpers,
+            # If true return type gets " | None" appended
+            not_found_is_empty=operation.not_found == "empty",
             base_class="AsyncSpitzeisenApi" if is_async else "SyncSpitzeisenApi",
-            model_imports=endpoint.model_imports,
-            model_module=f"{client.package}.models.{endpoint.key}",
-            coerce_function_imports=endpoint.coerce_function_imports,
+            model_imports=operation.model_imports,
+            model_module=f"{client.package}.models.{operation.key}",
+            coerce_function_imports=operation.coerce_function_imports,
             package=client.package,
             client_name=client.client_name,
             is_async=is_async,
@@ -178,13 +152,13 @@ def render_endpoint(
     )
 
 
-def render_public_endpoint(client: ClientPlan, endpoint: EndpointPlan, *, is_async: bool) -> str:
-    """Render the create-once public subclass for one generated endpoint base."""
+def render_public_operation(client: ClientPlan, operation: OperationPlan, *, is_async: bool) -> str:
+    """Render the create-once public subclass for one generated operation base."""
     return (
         environment()
-        .get_template("endpoint_public.py.jinja")
+        .get_template("operation_public.py.jinja")
         .render(
-            ep=endpoint,
+            operation=operation,
             package=client.package,
             prefix="Async" if is_async else "Sync",
             folder="_async" if is_async else "_sync",
@@ -221,13 +195,13 @@ def render_public_client(client: ClientPlan, *, is_async: bool) -> str:
     )
 
 
-def render_public_model(package: str, endpoint: EndpointPlan | Endpoint) -> str:
+def render_public_model(package: str, operation: OperationPlan) -> str:
     """Render one create-once public response-model subclass."""
     return (
         environment()
         .get_template("model_public.py.jinja")
         .render(
-            ep=endpoint,
+            operation=operation,
             package=package,
         )
     )
@@ -239,14 +213,13 @@ def generated_model_names(source: str) -> list[str]:
     return [node.name for node in tree.body if isinstance(node, ast.ClassDef) and not node.name.startswith("_")]
 
 
-def render_model_exports(manifest: Manifest | ClientPlan, model_names: list[str]) -> str:
+def render_model_exports(client: ClientPlan, model_names: list[str]) -> str:
     """Render the regenerated public facade for generated and extended schema models."""
-    package = manifest.package
-    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
+    package = client.package
     public_modules = {
-        endpoint.model: endpoint.key
-        for endpoint in endpoints
-        if endpoint.generate_model and endpoint.model in model_names
+        operation.model: operation.key
+        for operation in client.operations
+        if operation.generate_model and operation.model in model_names
     }
     generated_names = sorted(name for name in model_names if name not in public_modules)
     public_models = sorted(public_modules.items())
@@ -262,23 +235,22 @@ def render_model_exports(manifest: Manifest | ClientPlan, model_names: list[str]
     )
 
 
-def model_exports_module(manifest: Manifest | ClientPlan, package_root: Path, model_source: str) -> GeneratedModule:
+def model_exports_module(client: ClientPlan, package_root: Path, model_source: str) -> GeneratedModule:
     """Build the regenerated facade that gives every schema class a public import path."""
     return formatted_module(
         package_root / "models" / "_exports.py",
-        render_model_exports(manifest, generated_model_names(model_source)),
+        render_model_exports(client, generated_model_names(model_source)),
     )
 
 
-def model_extension_modules(manifest: Manifest | ClientPlan, package_root: Path) -> list[GeneratedModule]:
+def model_extension_modules(client: ClientPlan, package_root: Path) -> list[GeneratedModule]:
     """Render package markers and one public response-model extension point per generated model."""
-    package = manifest.package
-    endpoints = manifest.endpoints if isinstance(manifest, ClientPlan) else tuple(manifest.endpoints.values())
+    package = client.package
     modules = [
         formatted_module(
             package_root / "models" / "__init__.py",
             (
-                '"""Public schema models and client-owned parameter types."""\n\n'
+                '"""Public schema models and client-owned param types."""\n\n'
                 f"from {package}.models._exports import *  # noqa: F403\n"
             ),
             create_once=True,
@@ -286,27 +258,18 @@ def model_extension_modules(manifest: Manifest | ClientPlan, package_root: Path)
     ]
     modules.extend(
         formatted_module(
-            package_root / "models" / f"{endpoint.key}.py",
-            render_public_model(package, endpoint),
+            package_root / "models" / f"{operation.key}.py",
+            render_public_model(package, operation),
             create_once=True,
         )
-        for endpoint in endpoints
-        if endpoint.generate_model
+        for operation in client.operations
+        if operation.generate_model
     )
     return modules
 
 
-def generate(manifest: Manifest, spec: dict[str, Any], package_root: Path) -> list[GeneratedModule]:
-    """Parse an OpenAPI mapping and render every module selected by a manifest."""
-    openapi = GeneratorData.from_dict(spec)
-    if isinstance(openapi, GeneratorError):
-        raise RuntimeError(openapi.detail or openapi.header)  # noqa: TRY004 - parser result, not a type contract
-    client = compile_manifest(manifest, openapi)
-    return generate_plan(client, package_root)
-
-
 def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModule]:
-    """Render every endpoint and extension module from an already compiled plan."""
+    """Render every operation and extension module from a compiled plan."""
     modules: list[GeneratedModule] = []
     for is_async in (True, False):
         folder = "_async" if is_async else "_sync"
@@ -315,7 +278,7 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
             (
                 formatted_module(
                     package_root / folder / "_generated" / "__init__.py",
-                    f'"""{label} generated implementation; do not edit."""\n',
+                    f'"""{label} generated implementation, do not edit."""\n',
                 ),
                 formatted_module(
                     package_root / folder / "__init__.py",
@@ -325,21 +288,21 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
             ),
         )
 
-    for endpoint in client.endpoints:
+    for operation in client.operations:
         for is_async in (True, False):
             folder = "_async" if is_async else "_sync"
-            generated_path = package_root / folder / "_generated" / f"{endpoint.key}.py"
+            generated_path = package_root / folder / "_generated" / f"{operation.key}.py"
             modules.append(
                 formatted_module(
                     generated_path,
-                    render_endpoint(client, endpoint, is_async=is_async),
+                    render_operation(client, operation, is_async=is_async),
                 ),
             )
-            public_path = package_root / folder / f"{endpoint.key}.py"
+            public_path = package_root / folder / f"{operation.key}.py"
             modules.append(
                 formatted_module(
                     public_path,
-                    render_public_endpoint(client, endpoint, is_async=is_async),
+                    render_public_operation(client, operation, is_async=is_async),
                     create_once=True,
                 ),
             )

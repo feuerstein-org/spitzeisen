@@ -89,7 +89,7 @@ lint.select = ["ALL"]
 lint.ignore = [
     "ANN401",   # Disallow typing.Any
     "ANN204",   # Require return type annotation for magic methods
-    "ASYNC109", # Disallow a `timeout` parameter on async functions - the transport takes one
+    "ASYNC109", # Disallow a `timeout` param on async functions - the transport takes one
                 # deliberately, because it forwards it to httpx2 rather than implementing the timeout itself
     "COM812",   # Require trailing commas - conflicts with ruff formatter
     "CPY001",   # Require a copyright notice at the top of every file
@@ -137,7 +137,7 @@ lint.unfixable = []
 ]
 "src/spitzeisen/codegen/parser/openapi.py" = [
     "C901",    # Kept structurally aligned with upstream parser entry points
-    "SIM105",  # The explicit try/except mirrors upstream path-parameter sorting
+    "SIM105",  # The explicit try/except mirrors upstream path-param sorting
 ]
 "examples/*" = [
     "INP001",   # Require packages to have a __init__.py file

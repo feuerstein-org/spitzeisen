@@ -22,7 +22,7 @@ run = "uv run python build_sync.py --check"
 
 [tasks.check-codegen-ci]
 description = "Fail if the generated example SDK is stale (CI only)"
-run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --config examples/spec/manifest.yaml --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --manifest examples/spec/manifest.yaml --output-path examples/weather_sdk"
 
 [tasks.pre-commit-ci]
 description = "Run pre-commit hooks (CI only)"

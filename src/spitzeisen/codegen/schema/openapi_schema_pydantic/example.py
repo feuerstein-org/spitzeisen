@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 class Example(BaseModel):
     """
-    Examples added to parameters / components to help clarify usage.
+    Examples added to params / components to help clarify usage.
 
     References:
         - https://swagger.io/docs/specification/adding-examples/

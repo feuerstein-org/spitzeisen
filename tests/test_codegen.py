@@ -1,8 +1,8 @@
 """
 Code generation: manifest validation, and what comes out the other end.
 
-The fixture is a three-endpoint slice of a real vendor document, so these tests exercise the
-awkward parts of a genuine spec — dotted filter names, an enum on one endpoint's `sort` and
+The fixture is a three-operation slice of a real vendor document, so these tests exercise the
+awkward parts of a genuine spec — dotted filter names, an enum on one operation's `sort` and
 none on another's, a default that already carries its sort direction.
 """
 
@@ -23,8 +23,16 @@ from pydantic import ValidationError
 
 from spitzeisen import AsyncSpitzeisenConfig, NoLimit
 from spitzeisen.codegen.cli import is_current, normalize_model_header, write
-from spitzeisen.codegen.generate import GeneratedModule, generate, generated_model_names, model_exports_module
+from spitzeisen.codegen.generate import (
+    GeneratedModule,
+    generate_plan,
+    generated_model_names,
+    model_exports_module,
+    prune_spec,
+)
+from spitzeisen.codegen.inputs import parse_openapi
 from spitzeisen.codegen.manifest import Manifest
+from spitzeisen.codegen.policy import compile_manifest
 from spitzeisen.testing import FakeRouter
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -43,7 +51,7 @@ def manifest_dict(**overrides: Any) -> dict[str, Any]:
         "base_url": "https://api.example.test",
         "package": "example_api",
         "client_name": "ExampleApi",
-        "endpoints": {
+        "operations": {
             "splits": {
                 "path": "/stocks/v1/splits",
                 "method_name": "get_splits",
@@ -73,7 +81,8 @@ def render(spec: dict[str, Any] | None, **overrides: Any) -> dict[str, str]:
     """Generate and return the modules keyed by a readable suffix of their path."""
     manifest = Manifest.model_validate(manifest_dict(**overrides))
     package_root = Path("example_api")
-    modules = generate(manifest, _complete_openapi(spec, manifest), package_root)
+    openapi = parse_openapi(_complete_openapi(spec, manifest))
+    modules = generate_plan(compile_manifest(manifest, openapi), package_root)
     return {module.path.relative_to(package_root).as_posix(): module.source for module in modules}
 
 
@@ -81,20 +90,20 @@ def _complete_openapi(spec: dict[str, Any] | None, manifest: Manifest) -> dict[s
     """Make small inline test cases valid OpenAPI documents before invoking the typed parser."""
     if spec is None:
         spec = {"paths": {}}
-        for endpoint in manifest.endpoints.values():
-            path_parameters = [
+        for operation in manifest.operations.values():
+            path_params = [
                 {
                     "name": name,
                     "in": "path",
                     "required": True,
                     "schema": {"type": "string"},
                 }
-                for _, name, _, _ in string.Formatter().parse(endpoint.path)
+                for _, name, _, _ in string.Formatter().parse(operation.path)
                 if name
             ]
-            spec["paths"][endpoint.path] = {
-                endpoint.method.value: {
-                    "parameters": path_parameters,
+            spec["paths"][operation.path] = {
+                operation.method.value: {
+                    "parameters": path_params,
                     "responses": {"200": {"description": "OK"}},
                 },
             }
@@ -131,12 +140,13 @@ def test_generated_model_names_reads_top_level_public_classes() -> None:
     assert generated_model_names(source) == ["Wind", "WeatherResponse"]
 
 
-def test_model_exports_promote_response_extensions_and_nested_schema_types() -> None:
+def test_model_exports_promote_response_extensions_and_nested_schema_types(spec: dict[str, Any]) -> None:
     """Consumers can name nested types while root responses resolve to user-owned subclasses."""
     manifest = Manifest.model_validate(manifest_dict())
     source = "class Wind:\n    pass\n\nclass Split:\n    pass\n"
+    client = compile_manifest(manifest, parse_openapi(spec))
 
-    module = model_exports_module(manifest, Path("example_api"), source)
+    module = model_exports_module(client, Path("example_api"), source)
 
     assert module.path == Path("example_api/models/_exports.py")
     assert not module.create_once
@@ -148,49 +158,89 @@ def test_model_exports_promote_response_extensions_and_nested_schema_types() -> 
     ast.parse(module.source)
 
 
-def test_endpoint_cost_must_be_scalar() -> None:
-    """One endpoint draws one scalar amount from the configured limiter."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["cost"] = {"daily": 1}
+def test_prune_spec_uses_the_compiled_client_plan(spec: dict[str, Any]) -> None:
+    """Model pruning follows the operations selected during policy compilation."""
+    manifest = Manifest.model_validate(manifest_dict())
+
+    pruned = prune_spec(spec, compile_manifest(manifest, parse_openapi(spec)))
+
+    assert set(pruned["paths"]) == {"/stocks/v1/splits"}
+
+
+def test_operation_cost_must_be_scalar() -> None:
+    """One operation draws one scalar amount from the configured limiter."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["cost"] = {"daily": 1}
 
     with pytest.raises(ValidationError, match="valid number"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 def test_a_choice_style_param_needs_a_literal() -> None:
-    """`comma_choice_list` validates against a Literal, so it has to be told which one."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["adjustment_type.any_of"].pop("literal")
+    """`comma_choice_list` validates against a Literal, so it has to name which one."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"].pop("literal")
 
     with pytest.raises(ValidationError, match="requires `literal`"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
-def test_a_required_parameter_cannot_also_have_a_default() -> None:
-    """A default makes a parameter optional to the caller, so it cannot be required too."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["adjustment_type.any_of"].update({"required": True, "default": "[]"})
+def test_manifest_client_default_can_back_a_required_param() -> None:
+    """An SDK default may back a wire-required param while preserving its API requirement."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"].update(
+        {"required": True, "client_default": "[]"},
+    )
 
-    with pytest.raises(ValidationError, match="cannot also declare a default"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+    manifest = Manifest.model_validate(manifest_dict(operations=operations))
+
+    override = manifest.operations["splits"].params["adjustment_type.any_of"]
+    assert override.client_default == "[]"
 
 
-def test_parameter_defaults_are_literals_not_generated_source() -> None:
+def test_manifest_param_default_name_is_client_default() -> None:
+    """The manifest deliberately rejects the ambiguous legacy `default` key."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"]["default"] = "[]"
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        Manifest.model_validate(manifest_dict(operations=operations))
+
+
+def test_manifest_param_annotation_has_no_type_alias(spec: dict[str, Any]) -> None:
+    """Manifest type overrides are annotations, with no compatibility spelling."""
+    operations = manifest_dict()["operations"]
+    param = operations["splits"]["params"]["adjustment_type.any_of"]
+    param["annotation"] = "list[str]"
+
+    manifest = Manifest.model_validate(manifest_dict(operations=operations))
+
+    assert manifest.operations["splits"].params["adjustment_type.any_of"].annotation == "list[str]"
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
+    assert "adjustment_types: list[str] | None = None" in source
+
+    param.pop("annotation")
+    param["type"] = "list[str]"
+    with pytest.raises(ValidationError, match="type"):
+        Manifest.model_validate(manifest_dict(operations=operations))
+
+
+def test_client_defaults_are_literals_not_generated_source() -> None:
     """A manifest cannot smuggle executable expressions into a generated signature."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["adjustment_type.any_of"]["default"] = "load_secret()"
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"]["client_default"] = "load_secret()"
 
-    with pytest.raises(ValidationError, match="must be a Python literal"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+    with pytest.raises(ValidationError, match="`client_default` must be a Python literal"):
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
-def test_max_page_size_requires_its_wire_parameter_name() -> None:
-    """OpenAPI does not identify pagination parameters, so the manifest must do so."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"].pop("page_size_param")
+def test_max_page_size_requires_its_wire_param_name() -> None:
+    """OpenAPI does not identify pagination params, so the manifest must do so."""
+    operations = manifest_dict()["operations"]
+    operations["splits"].pop("page_size_param")
 
     with pytest.raises(ValidationError, match=r"max_page_size.*requires.*page_size_param"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 @pytest.mark.parametrize(
@@ -207,66 +257,66 @@ def test_max_page_size_requires_its_wire_parameter_name() -> None:
         ),
     ],
 )
-def test_sorting_wire_parameters_must_match_the_selected_style(settings: dict[str, str], match: str) -> None:
+def test_sorting_wire_params_must_match_the_selected_style(settings: dict[str, str], match: str) -> None:
     """Sorting metadata is explicit and contradictory combinations fail at manifest load."""
-    endpoints = {"records": {"path": "/records", "method_name": "get_records", "model": "Record", **settings}}
+    operations = {"records": {"path": "/records", "method_name": "get_records", "model": "Record", **settings}}
 
     with pytest.raises(ValidationError, match=match):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 def test_single_resource_policy_rejects_collection_controls() -> None:
     """A setting the single-object renderer cannot honor is rejected rather than ignored."""
-    endpoints = single_endpoint(sort_style="suffix", sort_param="sort", sort_default="name", order_default="asc")
+    operations = single_operation(sort_style="suffix", sort_param="sort", sort_default="name", order_default="asc")
 
     with pytest.raises(ValidationError, match=r"single.*collection sorting"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 @pytest.mark.parametrize("coerce_function", ["not.valid", "class"])
 def test_a_custom_coerce_function_must_be_a_client_params_identifier(coerce_function: str) -> None:
     """The manifest names a client-owned import, not an arbitrary source expression."""
-    endpoints = manifest_dict()["endpoints"]
-    parameter = endpoints["splits"]["params"]["adjustment_type.any_of"]
-    parameter["coercion_style"] = "plain"
-    parameter["coerce_function"] = coerce_function
+    operations = manifest_dict()["operations"]
+    param = operations["splits"]["params"]["adjustment_type.any_of"]
+    param["coercion_style"] = "plain"
+    param["coerce_function"] = coerce_function
 
     with pytest.raises(ValidationError, match="valid Python identifier"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 def test_a_custom_coerce_function_cannot_compete_with_a_builtin_style() -> None:
-    """A parameter must have exactly one source of coercion behavior."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["adjustment_type.any_of"]["coerce_function"] = "coerce_adjustment_types"
+    """A param must have exactly one source of coercion behavior."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"]["coerce_function"] = "coerce_adjustment_types"
 
     with pytest.raises(ValidationError, match="cannot be combined"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
-def test_an_endpoint_missing_from_the_spec_stops_generation(spec: dict[str, Any]) -> None:
+def test_an_operation_missing_from_the_spec_stops_generation(spec: dict[str, Any]) -> None:
     """
     Vendor drift must fail loudly.
 
     This is the check that catches a path being renamed under us — the reason the manifest is
     resolved against the document rather than trusted on its own.
     """
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["path"] = "/stocks/v1/splits-renamed"
+    operations = manifest_dict()["operations"]
+    operations["splits"]["path"] = "/stocks/v1/splits-renamed"
 
     with pytest.raises(ValueError, match="vendor may have moved or renamed it"):
-        render(spec, endpoints=endpoints)
+        render(spec, operations=operations)
 
 
 def test_manifest_selects_methods_but_the_runtime_reports_unsupported_generation(spec: dict[str, Any]) -> None:
     """The compiler preserves every method while the current GET renderer has an explicit boundary."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["method"] = "post"
+    operations = manifest_dict()["operations"]
+    operations["splits"]["method"] = "post"
     path_item = spec["paths"]["/stocks/v1/splits"]
     path_item["post"] = path_item.pop("get")
 
     with pytest.raises(ValueError, match="currently generates GET requests only"):
-        render(spec, endpoints=endpoints)
+        render(spec, operations=operations)
 
 
 def test_a_path_without_get_stops_generation(spec: dict[str, Any]) -> None:
@@ -304,28 +354,29 @@ def test_both_surfaces_are_generated(spec: dict[str, Any]) -> None:
     }
 
 
-def test_public_endpoint_and_client_scaffolds_wrap_generated_bases(spec: dict[str, Any]) -> None:
+def test_public_operation_and_client_scaffolds_wrap_generated_bases(spec: dict[str, Any]) -> None:
     """SDK authors receive public extension points and complete aggregate client wiring."""
     modules = render(spec)
 
-    endpoint = modules["_async/splits.py"]
-    assert endpoint.startswith('"""Splits API."""')
-    assert "from example_api._async._generated.splits import AsyncSplitsApiBase" in endpoint
-    assert "class AsyncSplitsApi(AsyncSplitsApiBase):" in endpoint
-    assert '"""Get splits, validated into `Split` models."""' in endpoint
-    assert "Public extension point" not in endpoint
+    operation_module = modules["_async/splits.py"]
+    assert operation_module.startswith('"""Splits API."""')
+    assert "from example_api._async._generated.splits import AsyncSplitsApiBase" in operation_module
+    assert "class AsyncSplitsApi(AsyncSplitsApiBase):" in operation_module
+    assert '"""Get splits, validated into `Split` models."""' in operation_module
+    assert "Public extension point" not in operation_module
 
-    endpoint_base = modules["_async/_generated/splits.py"]
-    assert "AsyncSpitzeisenApi," in endpoint_base
-    assert "SpitzeisenEndpointSpec," in endpoint_base
-    assert "class AsyncSplitsApiBase(AsyncSpitzeisenApi):" in endpoint_base
+    operation_base = modules["_async/_generated/splits.py"]
+    assert "AsyncSpitzeisenApi," in operation_base
+    assert "SpitzeisenOperationSpec," in operation_base
+    assert "self._get_all_pages(\n            SPLITS_OPERATION,\n            params=params," in operation_base
+    assert "class AsyncSplitsApiBase(AsyncSpitzeisenApi):" in operation_base
 
     client_base = modules["_async/_generated/client.py"]
     assert "class AsyncExampleApiBase:" in client_base
     assert "from spitzeisen import AsyncSpitzeisenConfig" in client_base
     assert "def __init__(self, config: AsyncSpitzeisenConfig) -> None:" in client_base
     assert "self.splits_api = AsyncSplitsApi(config)" in client_base
-    assert "await endpoint_api.__aenter__()" in client_base
+    assert "await operation_api.__aenter__()" in client_base
 
     client = modules["_async/client.py"]
     assert client.startswith('"""Example API client."""')
@@ -337,7 +388,7 @@ def test_public_endpoint_and_client_scaffolds_wrap_generated_bases(spec: dict[st
 
     synchronous = modules["_sync/_generated/client.py"]
     assert "class SyncExampleApiBase:" in synchronous
-    assert "endpoint_api.__enter__()" in synchronous
+    assert "operation_api.__enter__()" in synchronous
     assert "await" not in synchronous
 
     sync_public = modules["_sync/client.py"]
@@ -353,21 +404,21 @@ def test_public_endpoint_and_client_scaffolds_wrap_generated_bases(spec: dict[st
     assert "from example_api.models._exports import *" in model_facade
 
 
-def test_public_endpoint_docstring_has_a_friendly_fallback(spec: dict[str, Any]) -> None:
+def test_public_operation_docstring_has_a_friendly_fallback(spec: dict[str, Any]) -> None:
     """A manifest without a summary still produces useful public API documentation."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"].pop("summary")
+    operations = manifest_dict()["operations"]
+    operations["splits"].pop("summary")
 
-    endpoint = render(spec, endpoints=endpoints)["_async/splits.py"]
+    operation = render(spec, operations=operations)["_async/splits.py"]
 
-    assert '"""Access the splits API."""' in endpoint
+    assert '"""Access the splits API."""' in operation
 
 
 def test_only_public_extension_modules_are_create_once(spec: dict[str, Any]) -> None:
     """Generated bases stay replaceable while public extension files become SDK-owned."""
     package_root = Path("example_api")
     manifest = Manifest.model_validate(manifest_dict())
-    modules = generate(manifest, spec, package_root)
+    modules = generate_plan(compile_manifest(manifest, parse_openapi(spec)), package_root)
 
     create_once = {module.path.relative_to(package_root).as_posix() for module in modules if module.create_once}
     assert create_once == {
@@ -406,7 +457,7 @@ def test_writer_preserves_create_once_public_modules(tmp_path: Path) -> None:
 
 def test_docstrings_are_written_for_their_surface(spec: dict[str, Any]) -> None:
     """
-    The reason endpoints are generated twice rather than desugared.
+    The reason operations are generated twice rather than desugared.
 
     A source transform rewrites code but never touches a docstring, which would leave the sync
     client documented as if it were asynchronous.
@@ -427,7 +478,7 @@ def test_docstrings_are_written_for_their_surface(spec: dict[str, Any]) -> None:
 
 def test_manifest_shapes_the_public_signature(spec: dict[str, Any]) -> None:
     """
-    A wire parameter can surface under a Python-friendly name.
+    A wire param can surface under a Python-friendly name.
 
     `adjustment_type.any_of` is not a Python identifier and `adjustment_types: list[...]` is
     a usable argument name, so the manifest maps one onto the other.
@@ -439,10 +490,10 @@ def test_manifest_shapes_the_public_signature(spec: dict[str, Any]) -> None:
     assert 'name="adjustment_type.any_of",' in source
 
 
-def test_openapi_required_query_parameter_is_required_in_the_signature(spec: dict[str, Any]) -> None:
-    """A required OpenAPI query parameter has no default and rejects a supplied None."""
-    parameters = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
-    next(parameter for parameter in parameters if parameter["name"] == "execution_date.gte")["required"] = True
+def test_openapi_required_query_param_is_required_in_the_signature(spec: dict[str, Any]) -> None:
+    """A required OpenAPI query param has no default and rejects a supplied None."""
+    params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
+    next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
 
     source = render(spec)["_async/_generated/splits.py"]
 
@@ -452,21 +503,68 @@ def test_openapi_required_query_parameter_is_required_in_the_signature(spec: dic
     assert 'param_name="execution_date_gte"' in source
 
 
-def test_manifest_cannot_weaken_an_openapi_required_parameter(spec: dict[str, Any]) -> None:
-    """The OpenAPI document remains authoritative when it marks a parameter required."""
-    parameters = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
-    next(parameter for parameter in parameters if parameter["name"] == "execution_date.gte")["required"] = True
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["execution_date.gte"] = {"required": False}
+def test_manifest_cannot_weaken_an_openapi_required_param(spec: dict[str, Any]) -> None:
+    """The OpenAPI document remains authoritative when it marks a param required."""
+    params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
+    next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["execution_date.gte"] = {"required": False}
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/splits.py"]
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
 
     assert "execution_date_gte: str," in source
     assert "execution_date_gte: str | None = None" not in source
 
 
-def test_openapi_parameter_sources_and_locations_are_honoured() -> None:
-    """Path-item parameters, local refs and every supported wire location reach generated code."""
+def test_manifest_client_default_can_back_an_openapi_required_param(spec: dict[str, Any]) -> None:
+    """An explicit SDK default makes the caller argument optional, not the wire param."""
+    params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
+    next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["execution_date.gte"] = {"client_default": "'today'"}
+
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
+
+    assert 'execution_date_gte: str = "today",' in source
+    assert "required=True" in source
+
+
+def test_required_param_client_default_cannot_be_none(spec: dict[str, Any]) -> None:
+    """A required wire param needs a value that can actually be serialized."""
+    params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
+    next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["execution_date.gte"] = {"client_default": "None"}
+
+    message = r"required param 'execution_date\.gte' cannot declare a client_default of None"
+    with pytest.raises(ValueError, match=message):
+        render(spec, operations=operations)
+
+
+def test_path_params_can_have_client_defaults() -> None:
+    """Keyword-only path params can mix defaulted and required values safely."""
+    operations = {
+        "account": {
+            "path": "/accounts/{account_id}/orders/{order_id}",
+            "method_name": "get_account",
+            "model": "Account",
+            "shape": "single",
+            "params": {"account_id": {"client_default": "'me'"}},
+        },
+    }
+
+    source = render(None, operations=operations)["_async/_generated/account.py"]
+
+    ast.parse(source)
+    assert 'account_id: str = "me",' in source
+    assert "order_id: str," in source
+    assert "get_account_raw(\n            account_id=account_id,\n            order_id=order_id," in source
+    assert 'account_id=require_value(account_id, "account_id")' in source
+    assert 'order_id=require_value(order_id, "order_id")' in source
+
+
+def test_openapi_param_sources_and_locations_are_honoured() -> None:
+    """Path-item params, local refs and every supported wire location reach generated code."""
     spec = {
         "components": {
             "parameters": {
@@ -511,32 +609,32 @@ def test_openapi_parameter_sources_and_locations_are_honoured() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "account": {
             "path": "/v1/accounts/{account_id}",
             "method_name": "get_account",
             "model": "Account",
             "shape": "single",
             "path_params": {"account_id": "account"},
-            "params": {"X-Workspace-ID": {"name": "workspace_id"}},
+            "params": {"X-Workspace-ID": {"name": "workspace_id", "client_default": "'default'"}},
         },
     }
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/account.py"]
+    source = render(spec, operations=operations)["_async/_generated/account.py"]
 
     assert "account: int," in source
     assert "Account to retrieve." in source
-    # The operation's declaration replaces the path-item version of the same query parameter.
+    # The operation's declaration replaces the path-item version of the same query param.
     assert "region: bool | None = None" in source
     assert "An operation-specific region filter." in source
-    assert "workspace_id: str," in source
+    assert 'workspace_id: str = "default",' in source
     assert 'name="region",' in source
     assert '"X-Workspace-ID": require_value(workspace_id, "workspace_id"),' in source
     assert "headers=headers," in source
 
 
-def test_openapi_cookie_parameters_are_rejected_until_supported() -> None:
-    """Failing generation is safer than emitting an endpoint that silently drops a cookie."""
+def test_openapi_cookie_params_are_rejected_until_supported() -> None:
+    """Failing generation is safer than emitting an operation that silently drops a cookie."""
     spec = {
         "paths": {
             "/v1/accounts": {
@@ -548,7 +646,7 @@ def test_openapi_cookie_parameters_are_rejected_until_supported() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "account": {
             "path": "/v1/accounts",
             "method_name": "get_account",
@@ -558,11 +656,11 @@ def test_openapi_cookie_parameters_are_rejected_until_supported() -> None:
     }
 
     with pytest.raises(ValueError, match="unsupported location 'cookie'"):
-        render(spec, endpoints=endpoints)
+        render(spec, operations=operations)
 
 
-def test_schema_less_content_parameter_is_skipped_like_upstream() -> None:
-    """The parser follows upstream and skips parameters which do not carry ``schema``."""
+def test_schema_less_content_param_is_skipped_like_upstream() -> None:
+    """The parser follows upstream and skips params which do not carry ``schema``."""
     spec = {
         "paths": {
             "/v1/search": {
@@ -578,7 +676,7 @@ def test_schema_less_content_parameter_is_skipped_like_upstream() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "search": {
             "path": "/v1/search",
             "method_name": "search",
@@ -587,7 +685,7 @@ def test_schema_less_content_parameter_is_skipped_like_upstream() -> None:
         },
     }
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/search.py"]
+    source = render(spec, operations=operations)["_async/_generated/search.py"]
 
     assert "filter:" not in source
 
@@ -611,7 +709,7 @@ def test_openapi_query_serialization_metadata_reaches_generated_code() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "search": {
             "path": "/v1/search",
             "method_name": "search",
@@ -620,7 +718,7 @@ def test_openapi_query_serialization_metadata_reaches_generated_code() -> None:
         },
     }
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/search.py"]
+    source = render(spec, operations=operations)["_async/_generated/search.py"]
 
     assert "symbol: list[str] | None = None" in source
     assert 'style="form"' in source
@@ -644,7 +742,7 @@ def test_manifest_uses_openapi_style_and_separate_coercion_style() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "search": {
             "path": "/v1/search",
             "method_name": "search",
@@ -654,7 +752,7 @@ def test_manifest_uses_openapi_style_and_separate_coercion_style() -> None:
         },
     }
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/search.py"]
+    source = render(spec, operations=operations)["_async/_generated/search.py"]
 
     assert 'style="pipeDelimited"' in source
     assert "explode=False" in source
@@ -662,19 +760,19 @@ def test_manifest_uses_openapi_style_and_separate_coercion_style() -> None:
 
 def test_legacy_query_style_and_coercion_values_in_style_are_rejected() -> None:
     """The direct rename deliberately provides no manifest compatibility aliases."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["adjustment_type.any_of"] = {"query_style": "form"}
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["adjustment_type.any_of"] = {"query_style": "form"}
 
     with pytest.raises(ValidationError, match="query_style"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
-    endpoints["splits"]["params"]["adjustment_type.any_of"] = {"style": "comma_choice_list"}
+    operations["splits"]["params"]["adjustment_type.any_of"] = {"style": "comma_choice_list"}
     with pytest.raises(ValidationError, match="comma_choice_list"):
-        Manifest.model_validate(manifest_dict(endpoints=endpoints))
+        Manifest.model_validate(manifest_dict(operations=operations))
 
 
 def test_openapi_deep_object_query_serialization_is_rejected() -> None:
-    """Do not generate an endpoint that would serialize deepObject incorrectly."""
+    """Do not generate an operation that would serialize deepObject incorrectly."""
     spec = {
         "paths": {
             "/v1/search": {
@@ -694,7 +792,7 @@ def test_openapi_deep_object_query_serialization_is_rejected() -> None:
             },
         },
     }
-    endpoints = {
+    operations = {
         "search": {
             "path": "/v1/search",
             "method_name": "search",
@@ -704,30 +802,42 @@ def test_openapi_deep_object_query_serialization_is_rejected() -> None:
     }
 
     with pytest.raises(ValueError, match="style 'deepObject' is unsupported"):
-        render(spec, endpoints=endpoints)
+        render(spec, operations=operations)
 
 
 def test_manifest_can_import_and_call_a_client_owned_coerce_function(spec: dict[str, Any]) -> None:
-    """A client can apply vendor-specific parameter semantics without hand-writing an endpoint."""
-    endpoints = manifest_dict()["endpoints"]
-    parameter = endpoints["splits"]["params"]["adjustment_type.any_of"]
-    parameter.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
-    source = render(spec, endpoints=endpoints)["_async/_generated/splits.py"]
+    """A client can apply vendor-specific param semantics without hand-writing an operation."""
+    operations = manifest_dict()["operations"]
+    param = operations["splits"]["params"]["adjustment_type.any_of"]
+    param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
 
     assert "from example_api.params import coerce_adjustment_types" in source
     assert 'name="adjustment_type.any_of",' in source
     assert "coerce_adjustment_types(" in source
     assert 'param_name="adjustment_types",' in source
-    assert "literal=AdjustmentType" in source
+    assert "literal_type=AdjustmentType" in source
 
 
-def test_parameter_overrides_must_exist_in_the_selected_operation(spec: dict[str, Any]) -> None:
-    """A vendor removing a configured parameter is reported as manifest/spec drift."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["params"]["removed_filter"] = {"name": "removed_filter"}
+def test_custom_coerce_function_can_omit_a_literal(spec: dict[str, Any]) -> None:
+    """Custom coercers receive an explicit None when they do not need a client-owned Literal."""
+    operations = manifest_dict()["operations"]
+    param = operations["splits"]["params"]["adjustment_type.any_of"]
+    param.pop("literal")
+    param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
+
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
+
+    assert "literal_type=None" in source
+
+
+def test_param_overrides_must_exist_in_the_selected_operation(spec: dict[str, Any]) -> None:
+    """A vendor removing a configured param is reported as manifest/spec drift."""
+    operations = manifest_dict()["operations"]
+    operations["splits"]["params"]["removed_filter"] = {"name": "removed_filter"}
 
     with pytest.raises(ValueError, match=r"removed_filter.*absent from the selected OpenAPI operation"):
-        render(spec, endpoints=endpoints)
+        render(spec, operations=operations)
 
 
 def test_dotted_filters_become_identifiers(spec: dict[str, Any]) -> None:
@@ -751,9 +861,9 @@ def test_suffix_sort_style_strips_the_direction_from_the_default(spec: dict[str,
     assert 'name="sort"' in source
 
 
-def test_a_separate_order_param_is_used_when_the_endpoint_has_one(spec: dict[str, Any]) -> None:
-    """Not every endpoint encodes direction as a suffix; tickers takes a real `order`."""
-    endpoints = {
+def test_a_separate_order_param_is_used_when_the_operation_has_one(spec: dict[str, Any]) -> None:
+    """Not every operation encodes direction as a suffix; tickers takes a real `order`."""
+    operations = {
         "tickers": {
             "path": "/v3/reference/tickers",
             "method_name": "get_all_tickers",
@@ -765,7 +875,7 @@ def test_a_separate_order_param_is_used_when_the_endpoint_has_one(spec: dict[str
             "order_default": "asc",
         },
     }
-    source = render(spec, endpoints=endpoints)["_async/_generated/tickers.py"]
+    source = render(spec, operations=operations)["_async/_generated/tickers.py"]
 
     # Validated in place rather than combined into one value, which is the difference
     # between this style and the suffix one.
@@ -777,13 +887,13 @@ def test_a_separate_order_param_is_used_when_the_endpoint_has_one(spec: dict[str
 
 def test_sorting_uses_explicit_wire_names_and_openapi_direction_values(spec: dict[str, Any]) -> None:
     """Neither query names nor the vendor's direction vocabulary are framework conventions."""
-    parameters = spec["paths"]["/v3/reference/tickers"]["get"]["parameters"]
-    sort_parameter = next(parameter for parameter in parameters if parameter["name"] == "sort")
-    order_parameter = next(parameter for parameter in parameters if parameter["name"] == "order")
-    sort_parameter["name"] = "order_by"
-    order_parameter["name"] = "direction"
-    order_parameter["schema"].update({"enum": ["up", "down"], "default": "up"})
-    endpoints = {
+    params = spec["paths"]["/v3/reference/tickers"]["get"]["parameters"]
+    sort_param = next(param for param in params if param["name"] == "sort")
+    order_param = next(param for param in params if param["name"] == "order")
+    sort_param["name"] = "order_by"
+    order_param["name"] = "direction"
+    order_param["schema"].update({"enum": ["up", "down"], "default": "up"})
+    operations = {
         "tickers": {
             "path": "/v3/reference/tickers",
             "method_name": "get_all_tickers",
@@ -795,7 +905,7 @@ def test_sorting_uses_explicit_wire_names_and_openapi_direction_values(spec: dic
         },
     }
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/tickers.py"]
+    source = render(spec, operations=operations)["_async/_generated/tickers.py"]
 
     assert 'order: Literal["up", "down"] = "up"' in source
     assert 'coerce_choice(order, Literal["up", "down"], "order")' in source
@@ -806,8 +916,8 @@ def test_sorting_uses_explicit_wire_names_and_openapi_direction_values(spec: dic
 
 def test_suffix_sorting_can_use_manifest_owned_literals_and_defaults(spec: dict[str, Any]) -> None:
     """A partial OpenAPI document can delegate closed sorting types to the client package."""
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"].update(
+    operations = manifest_dict()["operations"]
+    operations["splits"].update(
         {
             "sort_literal": "SortField",
             "order_literal": "SortDirection",
@@ -816,7 +926,7 @@ def test_suffix_sorting_can_use_manifest_owned_literals_and_defaults(spec: dict[
         },
     )
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/splits.py"]
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
 
     assert "from example_api.models import AdjustmentType, SortDirection, SortField" in source
     assert "from example_api.models.splits import Split" in source
@@ -832,7 +942,7 @@ def test_page_size_falls_back_to_the_spec(spec: dict[str, Any]) -> None:
 
     `/v3/reference/tickers` declares `limit.max: 1000` in its pagination extension.
     """
-    endpoints = {
+    operations = {
         "tickers": {
             "path": "/v3/reference/tickers",
             "method_name": "get_all_tickers",
@@ -841,34 +951,34 @@ def test_page_size_falls_back_to_the_spec(spec: dict[str, Any]) -> None:
             "page_size_param": "limit",
         },
     }
-    source = render(spec, endpoints=endpoints)["_async/_generated/tickers.py"]
+    source = render(spec, operations=operations)["_async/_generated/tickers.py"]
 
     assert "max_page_size" not in source
     assert "min(max_results, 1000) if max_results is not None else 1000" in source
     assert 'name="limit"' in source
 
 
-def test_page_size_parameter_name_is_explicit(spec: dict[str, Any]) -> None:
-    """A vendor's `per_page` parameter is generated without assuming the name `limit`."""
-    parameters = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
-    next(parameter for parameter in parameters if parameter["name"] == "limit")["name"] = "per_page"
-    endpoints = manifest_dict()["endpoints"]
-    endpoints["splits"]["page_size_param"] = "per_page"
+def test_page_size_param_name_is_explicit(spec: dict[str, Any]) -> None:
+    """A vendor's `per_page` param is generated without assuming the name `limit`."""
+    params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
+    next(param for param in params if param["name"] == "limit")["name"] = "per_page"
+    operations = manifest_dict()["operations"]
+    operations["splits"]["page_size_param"] = "per_page"
 
-    source = render(spec, endpoints=endpoints)["_async/_generated/splits.py"]
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
 
     assert 'name="per_page"' in source
     assert 'name="limit"' not in source
 
 
 def test_scalar_cost_is_rendered(spec: dict[str, Any]) -> None:
-    """The endpoint's scalar cost reaches the generated SpitzeisenEndpointSpec."""
+    """The operation's scalar cost reaches the generated SpitzeisenOperationSpec."""
     source = render(spec)["_async/_generated/splits.py"]
 
     assert "cost=1.0" in source
 
 
-def single_endpoint(**overrides: Any) -> dict[str, Any]:
+def single_operation(**overrides: Any) -> dict[str, Any]:
     """A single-resource lookup, the shape `not_found` applies to."""
     return {
         "station": {
@@ -881,30 +991,51 @@ def single_endpoint(**overrides: Any) -> dict[str, Any]:
     }
 
 
+def test_single_operation_vendor_docs_do_not_leave_a_trailing_blank_line() -> None:
+    """A documentation URL is the last line of the generated module docstring."""
+    source = render(None, operations=single_operation(docs_url="https://docs.example.test/stations"))[
+        "_async/_generated/station.py"
+    ]
+
+    assert 'Vendor documentation: https://docs.example.test/stations\n"""' in source
+    assert 'Vendor documentation: https://docs.example.test/stations\n\n"""' not in source
+
+
 def test_a_single_resource_lookup_raises_on_a_missing_resource_by_default() -> None:
     """
     A 404 says both "no such record" and "no such path", and only the vendor knows which.
 
-    So the default is to raise: an endpoint whose path has gone stale must not read as a
+    So the default is to raise: an operation whose path has gone stale must not read as a
     resource that happens not to exist.
     """
-    source = render(None, endpoints=single_endpoint())["_async/_generated/station.py"]
+    source = render(None, operations=single_operation())["_async/_generated/station.py"]
 
     ast.parse(source)
     assert "-> Station:" in source
     assert "await self._request(" in source
+    assert "params=params," in source
     assert "_request_optional" not in source
     assert "NotFoundError: If the resource does not exist" in source
 
 
 def test_declaring_not_found_empty_returns_none_instead() -> None:
     """The opt-in: `not_found: empty` is what makes an absent resource a return value."""
-    source = render(None, endpoints=single_endpoint(not_found="empty"))["_async/_generated/station.py"]
+    source = render(None, operations=single_operation(not_found="empty"))["_async/_generated/station.py"]
 
     ast.parse(source)
     assert "-> Station | None:" in source
     assert "await self._request_optional(" in source
+    assert "params=params," in source
     assert "if raw is None:" in source
+
+
+def test_single_raw_docstring_has_no_empty_line_under_its_summary() -> None:
+    """Raw single-object methods do not leave an empty docstring line behind."""
+    empty = render(None, operations=single_operation(not_found="empty"))["_async/_generated/station.py"]
+    raising = render(None, operations=single_operation())["_async/_generated/station.py"]
+
+    assert 'without validation.\n\n        """' not in empty
+    assert '"""Fetch the raw JSON object, without validation."""' in raising
 
 
 def test_not_found_is_independent_of_shape() -> None:
@@ -914,8 +1045,8 @@ def test_not_found_is_independent_of_shape() -> None:
     Inferring it from `shape: single` would force None on single-resource lookups that want
     the exception, and deny it to collections that want an empty list.
     """
-    optional = render(None, endpoints=single_endpoint(not_found="empty"))
-    required = render(None, endpoints=single_endpoint())
+    optional = render(None, operations=single_operation(not_found="empty"))
+    required = render(None, operations=single_operation())
 
     assert optional != required
 
@@ -923,13 +1054,13 @@ def test_not_found_is_independent_of_shape() -> None:
 def test_absent_as_empty_is_rejected_for_a_collection() -> None:
     """Nothing honours it on the pagination path yet, and a key that silently does nothing is worse."""
     with pytest.raises(ValidationError, match="only supported for shape='single'"):
-        Manifest.model_validate(manifest_dict(endpoints=single_endpoint(shape="collection", not_found="empty")))
+        Manifest.model_validate(manifest_dict(operations=single_operation(shape="collection", not_found="empty")))
 
 
-def test_a_single_resource_endpoint_without_an_envelope_returns_the_body() -> None:
+def test_a_single_resource_operation_without_an_envelope_returns_the_body() -> None:
     """`results_key: null` means the body *is* the object, which many APIs do."""
-    endpoints = single_endpoint(results_key=None)
-    source = render(None, endpoints=endpoints)["_async/_generated/station.py"]
+    operations = single_operation(results_key=None)
+    source = render(None, operations=operations)["_async/_generated/station.py"]
 
     ast.parse(source)
     assert "if not isinstance(data, dict):" in source
@@ -938,9 +1069,9 @@ def test_a_single_resource_endpoint_without_an_envelope_returns_the_body() -> No
     assert "return data" in source
 
 
-def test_openapi_parameters_feed_the_same_policy_pipeline() -> None:
-    """OpenAPI owns wire parameters while the manifest owns friendly SDK presentation."""
-    endpoints = {
+def test_openapi_params_feed_the_same_policy_pipeline() -> None:
+    """OpenAPI owns wire params while the manifest owns friendly SDK presentation."""
+    operations = {
         "strikes": {
             "path": "/datav2/strikes",
             "method_name": "get_strikes",
@@ -968,7 +1099,7 @@ def test_openapi_parameters_feed_the_same_policy_pipeline() -> None:
         },
     }
 
-    modules = render(spec, endpoints=endpoints)
+    modules = render(spec, operations=operations)
     source = modules["_async/_generated/strikes.py"]
 
     ast.parse(source)
@@ -998,9 +1129,9 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
         "from typing import Any\n"
         "from spitzeisen import coerce_choices\n"
         "def coerce_adjustment_types(\n"
-        "    values: Sequence[str] | None, *, param_name: str, literal: Any | None\n"
+        "    values: Sequence[str] | None, *, param_name: str, literal_type: Any | None\n"
         ") -> str | None:\n"
-        "    return coerce_choices(values, literal, param_name)\n",
+        "    return coerce_choices(values, literal_type, param_name)\n",
     )
     (package / "models").mkdir()
     (package / "models" / "_generated.py").write_text(
@@ -1015,11 +1146,11 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
     (package / "models" / "__init__.py").write_text(
         'from typing import Literal\nAdjustmentType = Literal["forward_split", "reverse_split", "stock_dividend"]\n',
     )
-    endpoints = manifest_dict()["endpoints"]
-    parameter = endpoints["splits"]["params"]["adjustment_type.any_of"]
-    parameter.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
-    endpoints["splits"]["params"]["ticker"] = {"required": True}
-    for name, source in render(spec, endpoints=endpoints).items():
+    operations = manifest_dict()["operations"]
+    param = operations["splits"]["params"]["adjustment_type.any_of"]
+    param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
+    operations["splits"]["params"]["ticker"] = {"required": True}
+    for name, source in render(spec, operations=operations).items():
         if name.startswith("_async/") or name == "models/splits.py":
             target = package / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1043,7 +1174,7 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
 
         async def exercise_public_client() -> list[Any]:
             async with api:
-                with pytest.raises(ValueError, match=r"Required parameter 'ticker' was not provided"):
+                with pytest.raises(ValueError, match=r"Required param 'ticker' was not provided"):
                     await api.splits_api.get_splits(ticker=None, adjustment_types=["forward_split"])
                 assert router.requests == []
                 return await api.splits_api.get_splits(ticker="AAPL", adjustment_types=["forward_split"])
@@ -1058,6 +1189,6 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
     assert [record.ticker for record in records] == ["AAPL"]
     assert records[0].execution_date == date(2020, 8, 31)
     assert len(router.requests) == 2  # The page-number strategy requests its empty terminal page.
-    # The manifest's comma_choice_list shaping reached the wire under the vendor's own parameter name.
+    # The manifest's comma_choice_list shaping reached the wire under the vendor's own param name.
     assert router.requests[0].params["adjustment_type.any_of"] == "forward_split"
     assert router.requests[0].params["sort"] == "execution_date.desc"

@@ -27,7 +27,7 @@ from spitzeisen import (
     PageNumber,
     QueryParamAuth,
     ServerError,
-    SpitzeisenEndpointSpec,
+    SpitzeisenOperationSpec,
     SyncSpitzeisenApi,
     SyncSpitzeisenConfig,
     TransportError,
@@ -40,8 +40,8 @@ from spitzeisen.testing import FakeRouter
 if TYPE_CHECKING:
     from spitzeisen.pagination import JsonObject, JsonValue
 
-THINGS = SpitzeisenEndpointSpec(path="/v1/things", pagination=PageNumber())
-ONE_THING = SpitzeisenEndpointSpec(path="/v1/things/{thing_id}", pagination=NoPagination())
+THINGS = SpitzeisenOperationSpec(path="/v1/things", pagination=PageNumber())
+ONE_THING = SpitzeisenOperationSpec(path="/v1/things/{thing_id}", pagination=NoPagination())
 
 SERVER_ERROR = 500
 TOO_MANY_REQUESTS = 429
@@ -55,11 +55,11 @@ class Thing(BaseModel):
 
 
 class AsyncThings(AsyncSpitzeisenApi):
-    """Endpoint class under test (awaitable)."""
+    """Operation class under test (awaitable)."""
 
 
 class SyncThings(SyncSpitzeisenApi):
-    """Endpoint class under test (blocking)."""
+    """Operation class under test (blocking)."""
 
 
 @pytest.fixture(params=["async", "sync"])
@@ -72,7 +72,7 @@ class Driver:
     """Calls whichever surface is under test, so test bodies stay surface-agnostic."""
 
     def __init__(self, surface: str, **config_kwargs: object) -> None:
-        """Build a config and endpoint instance for the surface under test."""
+        """Build a config and operation instance for the surface under test."""
         self.is_async = surface == "async"
         self.router = FakeRouter()
         self.http_client: httpx2.AsyncClient | httpx2.Client
@@ -110,7 +110,7 @@ class Driver:
         result = getattr(self.api, name)(*args, **kwargs)
         return await result if self.is_async else result
 
-    async def pages(self, spec: SpitzeisenEndpointSpec, **kwargs: object) -> list[JsonObject]:
+    async def pages(self, spec: SpitzeisenOperationSpec, **kwargs: object) -> list[JsonObject]:
         """Collect all records for `spec`."""
         return await self.call("_get_all_pages", spec, **kwargs)  # type: ignore[return-value]
 
@@ -131,7 +131,7 @@ async def test_auth_and_params_reach_the_wire(surface: str) -> None:
     driver.config.auth = BearerHeader("secret")
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", THINGS, serialize_query_param("3", name="size.gte"))
+    await driver.call("_request", THINGS, params=serialize_query_param("3", name="size.gte"))
 
     recorded = driver.router.requests[0]
     assert recorded.headers["Authorization"] == "Bearer secret"
@@ -152,7 +152,7 @@ async def test_query_param_auth(surface: str) -> None:
 
 
 async def test_request_headers_reach_the_wire(surface: str) -> None:
-    """Generated OpenAPI header parameters stay attached to every request."""
+    """Generated OpenAPI header params stay attached to every request."""
     driver = Driver(surface)
     driver.router.add("/v1/things", json={"results": []})
 
@@ -171,7 +171,7 @@ async def test_path_params_are_substituted(surface: str) -> None:
     driver = Driver(surface)
     driver.router.add("/v1/things/abc", json={"id": "abc"})
 
-    await driver.call("_request", ONE_THING, None, thing_id="abc")
+    await driver.call("_request", ONE_THING, params=None, thing_id="abc")
 
     assert driver.router.requests[0].url == "https://fake.test/v1/things/abc"
 
@@ -193,8 +193,8 @@ async def test_page_number_pagination_carries_the_original_params_forward(surfac
     """
     The page number is added to the query, not substituted for it.
 
-    Dropping the caller's parameters would lose `limit` from the second page onwards, so an
-    A generated endpoint's page-size parameter must survive every page. Otherwise it would ask
+    Dropping the caller's params would lose `limit` from the second page onwards, so an
+    A generated operation's page-size param must survive every page. Otherwise it would ask
     for a large page once and take the vendor's default afterwards, silently multiplying the
     request count against a limiter this library exists to conserve.
     """
@@ -210,7 +210,7 @@ async def test_page_number_pagination_carries_the_original_params_forward(surfac
     assert driver.router.requests[1].params == {"limit": "100", "order": "desc", "page": "2"}
 
 
-async def test_pagination_preserves_repeated_query_parameters(surface: str) -> None:
+async def test_pagination_preserves_repeated_query_params(surface: str) -> None:
     """An exploded OpenAPI array stays exploded on every requested page."""
     driver = Driver(surface)
     driver.router.add_pages("/v1/things", [[{"id": "a"}], []])
@@ -227,7 +227,7 @@ async def test_query_values_are_encoded_by_httpx2(surface: str) -> None:
     driver.router.add("/v1/things", json={"results": []})
     params = serialize_query_param("https://example.test/a/b#details", name="url")
 
-    await driver.call("_request", THINGS, params)
+    await driver.call("_request", THINGS, params=params)
 
     assert "url=https%3A%2F%2Fexample.test%2Fa%2Fb%23details" in driver.router.requests[0].url
     assert driver.router.requests[0].params["url"] == "https://example.test/a/b#details"
@@ -235,10 +235,10 @@ async def test_query_values_are_encoded_by_httpx2(surface: str) -> None:
 
 async def test_a_strategy_seeds_the_first_request(surface: str) -> None:
     """
-    A vendor that will not serve a collection without its own parameter gets it up front.
+    A vendor that will not serve a collection without its own param gets it up front.
 
     The core sends whatever `first_params` returns, so a strategy is never stuck hoping the
-    API has a sensible default for a parameter it actually requires.
+    API has a sensible default for a param it actually requires.
     """
 
     class DemandsAToken:
@@ -263,7 +263,7 @@ async def test_a_strategy_seeds_the_first_request(surface: str) -> None:
     driver.router.add("/v1/things", json=[{"id": "a"}])
 
     await driver.pages(
-        SpitzeisenEndpointSpec(path="/v1/things", pagination=DemandsAToken()),
+        SpitzeisenOperationSpec(path="/v1/things", pagination=DemandsAToken()),
         params=serialize_query_param("x", name="q"),
     )
 
@@ -272,7 +272,7 @@ async def test_a_strategy_seeds_the_first_request(surface: str) -> None:
 
 async def test_page_number_pagination_starts_where_it_is_told(surface: str) -> None:
     """`start` is a real starting page, asked for explicitly rather than assumed."""
-    spec = SpitzeisenEndpointSpec(path="/v1/things", pagination=PageNumber(start=7))
+    spec = SpitzeisenOperationSpec(path="/v1/things", pagination=PageNumber(start=7))
     driver = Driver(surface)
     driver.router.add_pages("/v1/things", [[{"id": "a"}]])
 
@@ -283,7 +283,7 @@ async def test_page_number_pagination_starts_where_it_is_told(surface: str) -> N
 
 async def test_page_number_pagination_strides_by_step(surface: str) -> None:
     """A vendor counting in strides is walked in strides: 100, 200, 300."""
-    spec = SpitzeisenEndpointSpec(path="/v1/things", pagination=PageNumber(start=100, step=100))
+    spec = SpitzeisenOperationSpec(path="/v1/things", pagination=PageNumber(start=100, step=100))
     driver = Driver(surface)
     driver.router.add_pages("/v1/things", [[{"id": "a"}], [{"id": "b"}], [{"id": "c"}]])
 
@@ -312,7 +312,7 @@ async def test_max_results_stops_pagination_early(surface: str) -> None:
 
 @pytest.mark.parametrize("max_results", [0, -1])
 async def test_non_positive_max_results_is_rejected_before_request(surface: str, max_results: int) -> None:
-    """Every endpoint, generated or hand-written, validates the shared pagination cap."""
+    """Every operation, generated or hand-written, validates the shared pagination cap."""
     driver = Driver(surface)
 
     with pytest.raises(ValueError, match=rf"max_results must be >= 1, got {max_results}"):
@@ -323,7 +323,7 @@ async def test_non_positive_max_results_is_rejected_before_request(surface: str,
 
 async def test_bare_list_envelope(surface: str) -> None:
     """An API whose body *is* the list needs no envelope key."""
-    spec = SpitzeisenEndpointSpec(path="/v1/things", pagination=NoPagination(results_key=None))
+    spec = SpitzeisenOperationSpec(path="/v1/things", pagination=NoPagination(results_key=None))
     driver = Driver(surface)
     driver.router.add("/v1/things", json=[{"id": "a"}, {"id": "b"}])
 
@@ -394,7 +394,7 @@ async def test_request_optional_maps_404_to_none(surface: str) -> None:
     driver = Driver(surface)
     driver.router.add("/v1/things/gone", status=404, json={"error": "not found"})
 
-    assert await driver.call("_request_optional", ONE_THING, None, thing_id="gone") is None
+    assert await driver.call("_request_optional", ONE_THING, params=None, thing_id="gone") is None
 
 
 async def test_request_optional_propagates_other_errors(surface: str) -> None:
@@ -403,7 +403,7 @@ async def test_request_optional_propagates_other_errors(surface: str) -> None:
     driver.router.add("/v1/things/x", status=401, json={})
 
     with pytest.raises(AuthenticationError):
-        await driver.call("_request_optional", ONE_THING, None, thing_id="x")
+        await driver.call("_request_optional", ONE_THING, params=None, thing_id="x")
 
 
 async def test_not_found_is_raised_by_plain_request(surface: str) -> None:
@@ -412,7 +412,7 @@ async def test_not_found_is_raised_by_plain_request(surface: str) -> None:
     driver.router.add("/v1/things/x", status=404, json={})
 
     with pytest.raises(NotFoundError):
-        await driver.call("_request", ONE_THING, None, thing_id="x")
+        await driver.call("_request", ONE_THING, params=None, thing_id="x")
 
 
 async def test_validation_skips_bad_records(surface: str) -> None:
@@ -557,7 +557,7 @@ async def test_records_is_read_once_per_page(surface: str) -> None:
     line -- would otherwise do it twice for every page, silently.
     """
     strategy = CountingStrategy()
-    spec = SpitzeisenEndpointSpec(path="/v1/things", pagination=strategy)
+    spec = SpitzeisenOperationSpec(path="/v1/things", pagination=strategy)
     driver = Driver(surface)
     driver.router.add_pages("/v1/things", [[{"id": "a"}], [{"id": "b"}]], results_key=None)
 
@@ -588,6 +588,6 @@ async def test_a_plain_cost_reaches_the_limiter(surface: str) -> None:
     driver.config.limiter = limiter = RecordingLimiter()
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", SpitzeisenEndpointSpec(path="/v1/things", cost=3.0))
+    await driver.call("_request", SpitzeisenOperationSpec(path="/v1/things", cost=3.0))
 
     assert limiter.costs == [3.0]

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Self
 
-{% for ep in client.endpoints -%}
-from {{ client.package }}.{{ folder }}.{{ ep.key }} import {{ prefix }}{{ ep.class_name }}
+{% for operation in client.operations -%}
+from {{ client.package }}.{{ folder }}.{{ operation.key }} import {{ prefix }}{{ operation.class_name }}
 {% endfor %}
 
 if TYPE_CHECKING:
@@ -18,27 +18,27 @@ if TYPE_CHECKING:
 
 
 class {{ prefix }}{{ client.client_name }}Base:
-    """Own and share one configuration across every generated endpoint API."""
+    """Own and share one configuration across every generated operation API."""
 
     def __init__(self, config: {{ prefix }}SpitzeisenConfig) -> None:
-        """Build every endpoint API around the same connection-level configuration."""
+        """Build every operation API around the same connection-level configuration."""
         self.config = config
-{% for ep in client.endpoints %}
-        self.{{ ep.accessor }} = {{ prefix }}{{ ep.class_name }}(config)
+{% for operation in client.operations %}
+        self.{{ operation.accessor }} = {{ prefix }}{{ operation.class_name }}(config)
 {% endfor %}
-        self._endpoint_apis = (
-{% for ep in client.endpoints %}
-            self.{{ ep.accessor }},
+        self._operation_apis = (
+{% for operation in client.operations %}
+            self.{{ operation.accessor }},
 {% endfor %}
         )
 
     {{ "async " if is_async else "" }}def __{{ "a" if is_async else "" }}enter__(self) -> Self:
-        """Enter every endpoint API while sharing one lazily-created HTTP client."""
-        for endpoint_api in self._endpoint_apis:
-            {% if is_async %}await {% endif %}endpoint_api.__{{ "a" if is_async else "" }}enter__()
+        """Enter every operation API while sharing one lazily-created HTTP client."""
+        for operation_api in self._operation_apis:
+            {% if is_async %}await {% endif %}operation_api.__{{ "a" if is_async else "" }}enter__()
         return self
 
     {{ "async " if is_async else "" }}def __{{ "a" if is_async else "" }}exit__(self, *args: object) -> None:
-        """Exit every endpoint API and close an owned HTTP client after the last holder."""
-        for endpoint_api in reversed(self._endpoint_apis):
-            {% if is_async %}await {% endif %}endpoint_api.__{{ "a" if is_async else "" }}exit__(*args)
+        """Exit every operation API and close an owned HTTP client after the last holder."""
+        for operation_api in reversed(self._operation_apis):
+            {% if is_async %}await {% endif %}operation_api.__{{ "a" if is_async else "" }}exit__(*args)

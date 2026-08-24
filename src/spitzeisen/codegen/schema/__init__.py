@@ -3,8 +3,8 @@ __all__ = [
     "MediaType",
     "OpenAPI",
     "Operation",
-    "Parameter",
-    "ParameterLocation",
+    "Param",
+    "ParamLocation",
     "PathItem",
     "Reference",
     "RequestBody",
@@ -19,7 +19,7 @@ from .openapi_schema_pydantic import (
     MediaType,
     OpenAPI,
     Operation,
-    Parameter,
+    Param,
     PathItem,
     Reference,
     RequestBody,
@@ -27,4 +27,4 @@ from .openapi_schema_pydantic import (
     Responses,
     Schema,
 )
-from .parameter_location import ParameterLocation
+from .param_location import ParamLocation

@@ -18,10 +18,10 @@ ValidationMode = Literal["raise", "skip"]
 
 class AsyncSpitzeisenConfig(BaseModel):
     """
-    Connection-level settings shared by every endpoint of a client.
+    Connection-level settings shared by every operation of a client.
 
     Args:
-        base_url: Root the endpoint paths are resolved against.
+        base_url: Root the operation paths are resolved against.
         auth: How credentials are applied to each request. Defaults to none.
         max_retries: Retries for retryable statuses and transport failures, with exponential
             backoff. 0 disables retrying.

@@ -6,7 +6,7 @@ The name used for each property MUST correspond to a security scheme declared in
 
 Security Requirement Objects that contain multiple schemes require that
 all schemes MUST be satisfied for a request to be authorized.
-This enables support for scenarios where multiple query parameters or HTTP headers
+This enables support for scenarios where multiple query params or HTTP headers
 are required to convey security information.
 
 When a list of Security Requirement Objects is defined on the

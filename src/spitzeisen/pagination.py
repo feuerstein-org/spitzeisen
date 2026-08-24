@@ -74,17 +74,17 @@ class PaginationStrategy(Protocol):
     Walks an API's paginated collection.
 
     Core will call `first_params` to get the first page (could be empty), afterwards `next_params`
-    is called to get the next page parameters, if None is returned it means all pages were downloaded.
+    is called to get the next page params, if None is returned it means all pages were downloaded.
 
     `records` is called after every page to extract the actual data from the JSON.
     """
 
     def first_params(self, params: QueryParams) -> QueryParams:
         """
-        Return the query parameters for the first request.
+        Return the query params for the first request.
 
         Add whatever the vendor needs to serve page one. A strategy that needs nothing returns
-        the caller's parameters unchanged.
+        the caller's params unchanged.
         """
         ...
 
@@ -100,16 +100,16 @@ class PaginationStrategy(Protocol):
         yielded: int,
     ) -> QueryParams | None:
         """
-        Return the query parameters for the next page, or None when the walk is complete.
+        Return the query params for the next page, or None when the walk is complete.
 
         `records` is what `records(page)` returned, `page` is the envelope alongside it `params` are the
-        parameters that produced it, `yielded` is how many records have been emitted so far.
+        params that produced it, `yielded` is how many records have been emitted so far.
         """
         ...
 
 
 class NoPagination:
-    """Use when no pagination is required, e.g. the endpoint returns the response in one chunk."""
+    """Use when no pagination is required, e.g. the operation returns one response chunk."""
 
     def __init__(self, results_key: str | None = None) -> None:
         """Store the envelope key holding the records, or None when the body *is* the list."""
@@ -136,9 +136,9 @@ class NoPagination:
 
 class PageNumber:
     """
-    Walk a numbered query parameter upwards until a page comes back empty.
+    Walk a numbered query param upwards until a page comes back empty.
 
-    Every request carries the parameter, e.g. `?page=1`, `?page=2` etc. `start` is where the
+    Every request carries the param, e.g. `?page=1`, `?page=2` etc. `start` is where the
     count begins.
 
     `step` is the amount the `page_param` is bumped on every request: `start=100, step=100`
@@ -155,7 +155,7 @@ class PageNumber:
         step: int = 1,
         results_key: str | None = None,
     ) -> None:
-        """Store the parameter name, start, stride, and envelope key."""
+        """Store the param name, start, stride, and envelope key."""
         if step < 1:
             # A step of zero would re-request the same page for as long as it kept returning
             msg = f"step must be >= 1, got {step}"
@@ -185,13 +185,13 @@ class PageNumber:
             return None
         current = next((item.value for item in reversed(params) if item.name == self.page_param), None)
         if current is None:
-            msg = f"pagination parameter {self.page_param!r} is missing"
+            msg = f"pagination param {self.page_param!r} is missing"
             raise ValueError(msg)
         return _replace_query_param(params, self.page_param, str(int(current) + self.step))
 
 
 def _replace_query_param(params: QueryParams, name: str, value: str) -> QueryParams:
-    """Replace the pagination key without touching the caller-supplied parameters."""
+    """Replace the pagination key without touching the caller-supplied params."""
     return [*(item for item in params if item.name != name), SerializedQueryParam(name, value)]
 
 

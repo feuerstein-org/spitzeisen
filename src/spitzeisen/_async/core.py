@@ -2,7 +2,7 @@
 The request core.
 
 The HTTP client, retry semantics, pagination and validation live here. Everything
-vendor-specific arrives as a `SpitzeisenEndpointSpec` or a strategy object.
+vendor-specific arrives as a `SpitzeisenOperationSpec` or a strategy object.
 
 Documentation written neutrally in regards to async/sync since unasync generates
 the sync counterpart.
@@ -32,7 +32,7 @@ from spitzeisen.params import QueryParams, SerializedQueryParam
 
 if TYPE_CHECKING:
     from spitzeisen._async.config import AsyncSpitzeisenConfig, ValidationMode
-    from spitzeisen.endpoints import SpitzeisenEndpointSpec
+    from spitzeisen.operations import SpitzeisenOperationSpec
     from spitzeisen.pagination import JsonObject, JsonValue
 
 logger = structlog.get_logger(__name__)
@@ -53,9 +53,9 @@ def _is_retryable(status: int) -> bool:
 
 class AsyncSpitzeisenApi:
     """
-    Base class for endpoint classes: one rate-limited, retrying, paginating request path.
+    Base class for generated operation classes: one rate-limited, retrying, paginating request path.
 
-    Subclasses describe *what* to call with a `SpitzeisenEndpointSpec` and call the
+    Subclasses describe *what* to call with a `SpitzeisenOperationSpec` and call the
     underscore-prefixed helpers; they never touch the HTTP client or the limiter directly.
     """
 
@@ -88,9 +88,9 @@ class AsyncSpitzeisenApi:
 
     async def _request(
         self,
-        spec: SpitzeisenEndpointSpec,
-        params: QueryParams | None = None,
+        operation_spec: SpitzeisenOperationSpec,
         *,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> JsonValue:
@@ -107,7 +107,7 @@ class AsyncSpitzeisenApi:
                 NotFoundError on 404), raised immediately without retrying.
 
         """
-        url = spec.url(self.config.base_url, **path_params)
+        url = operation_spec.url(self.config.base_url, **path_params)
         request_params = list(params or [])
         request_headers = dict(headers or {})
         auth_params: dict[str, str] = {}
@@ -117,7 +117,7 @@ class AsyncSpitzeisenApi:
 
         for attempt in range(self.config.max_retries + 1):
             try:
-                async with self.config.limiter(spec.cost):
+                async with self.config.limiter(operation_spec.cost):
                     response = await self._http_client.request(
                         "GET",
                         url,
@@ -165,29 +165,29 @@ class AsyncSpitzeisenApi:
 
     async def _request_optional(
         self,
-        spec: SpitzeisenEndpointSpec,
-        params: QueryParams | None = None,
+        operation_spec: SpitzeisenOperationSpec,
         *,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> JsonValue:
         """Like `_request`, but return None when the resource does not exist (HTTP 404)."""
         try:
-            return await self._request(spec, params, headers=headers, **path_params)
+            return await self._request(operation_spec, params=params, headers=headers, **path_params)
         except NotFoundError:
             return None
 
     async def _paginate(
         self,
-        spec: SpitzeisenEndpointSpec,
-        params: QueryParams | None = None,
+        operation_spec: SpitzeisenOperationSpec,
         *,
+        params: QueryParams | None = None,
         max_results: int | None = None,
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> AsyncIterator[JsonObject]:
         """
-        Yield records across pages, following the endpoint's pagination strategy.
+        Yield records across pages, following the operation's pagination strategy.
 
         Stops after `max_results` records (None means every record). Each page costs one
         limiter acquisition.
@@ -197,28 +197,28 @@ class AsyncSpitzeisenApi:
             raise ValueError(msg)
 
         # Get first page
-        current = spec.pagination.first_params(list(params or []))
+        current = operation_spec.pagination.first_params(list(params or []))
         yielded = 0
         while True:
-            page = await self._request(spec, current, headers=headers, **path_params)
+            page = await self._request(operation_spec, params=current, headers=headers, **path_params)
             # Extract the actual content from the HTTP response and yield each individual record
-            records = spec.pagination.records(page)
+            records = operation_spec.pagination.records(page)
             for record in records:
                 yield record
                 yielded += 1
                 if max_results is not None and yielded >= max_results:
                     return
             # The strategy decides what the next page needs, or if this was the final page returns None.
-            next_params = spec.pagination.next_params(page, records, current, yielded)
+            next_params = operation_spec.pagination.next_params(page, records, current, yielded)
             if next_params is None:
                 return
             current = list(next_params)
 
     async def _get_all_pages(
         self,
-        spec: SpitzeisenEndpointSpec,
-        params: QueryParams | None = None,
+        operation_spec: SpitzeisenOperationSpec,
         *,
+        params: QueryParams | None = None,
         max_results: int | None = None,
         headers: Mapping[str, str] | None = None,
         **path_params: object,
@@ -227,8 +227,8 @@ class AsyncSpitzeisenApi:
         return [
             record
             async for record in self._paginate(
-                spec,
-                params,
+                operation_spec,
+                params=params,
                 max_results=max_results,
                 headers=headers,
                 **path_params,

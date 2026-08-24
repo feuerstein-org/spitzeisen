@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .callback import Callback
 from .external_documentation import ExternalDocumentation
-from .parameter import Parameter
+from .param import Param
 from .reference import ReferenceOr
 from .request_body import RequestBody
 from .responses import Responses
@@ -25,7 +25,7 @@ class Operation(BaseModel):
     description: str | None = None
     externalDocs: ExternalDocumentation | None = None
     operationId: str | None = None
-    parameters: list[ReferenceOr[Parameter]] | None = None
+    params: list[ReferenceOr[Param]] | None = Field(default=None, alias="parameters")
     request_body: ReferenceOr[RequestBody] | None = Field(None, alias="requestBody")
     responses: Responses
     callbacks: dict[str, Callback] | None = None

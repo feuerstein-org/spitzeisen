@@ -125,10 +125,10 @@ async def test_weather_client_keeps_authentication_out_of_the_method_signature(
     api, router = weather_api
     router.add("/data/2.5/weather", json=weather_payload())
 
-    parameters = signature(api.current_weather_api.get_current_weather).parameters
-    assert "appid" not in parameters
-    assert "mode" not in parameters
-    assert {"latitude", "longitude", "units", "language"} <= parameters.keys()
+    params = signature(api.current_weather_api.get_current_weather).parameters
+    assert "appid" not in params
+    assert "mode" not in params
+    assert {"latitude", "longitude", "units", "language"} <= params.keys()
 
     await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
 
@@ -149,7 +149,7 @@ async def test_weather_client_maps_the_real_unauthorized_response(
 async def test_public_weather_model_runs_its_custom_validator(
     weather_api: tuple[AsyncWeatherApi, FakeRouter],
 ) -> None:
-    """The endpoint imports the preserved public subclass rather than the generated schema base."""
+    """The operation imports the preserved public subclass rather than the generated schema base."""
     api, router = weather_api
     payload = weather_payload()
     payload["weather"] = []

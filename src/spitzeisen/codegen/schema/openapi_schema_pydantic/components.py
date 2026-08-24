@@ -1,10 +1,10 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .callback import Callback
 from .example import Example
 from .header import Header
 from .link import Link
-from .parameter import Parameter
+from .param import Param
 from .reference import ReferenceOr
 from .request_body import RequestBody
 from .response import Response
@@ -26,7 +26,7 @@ class Components(BaseModel):
 
     schemas: dict[str, ReferenceOr[Schema]] | None = None
     responses: dict[str, ReferenceOr[Response]] | None = None
-    parameters: dict[str, ReferenceOr[Parameter]] | None = None
+    params: dict[str, ReferenceOr[Param]] | None = Field(default=None, alias="parameters")
     examples: dict[str, ReferenceOr[Example]] | None = None
     requestBodies: dict[str, ReferenceOr[RequestBody]] | None = None
     headers: dict[str, ReferenceOr[Header]] | None = None

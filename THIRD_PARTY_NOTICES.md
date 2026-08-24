@@ -4,7 +4,7 @@
 
 Spitzeisen vendors the complete `openapi_python_client/schema` package from
 openapi-python-client commit `ee9a8c435b92e7425a0b68be2d42bae977bf7526` under
-`src/spitzeisen/codegen/schema`. The vendored source is copied byte-for-byte, including its OpenAPI
+`src/spitzeisen/codegen/schema`. The vendored source follows upstream closely, including its OpenAPI
 3.0.3 and 3.1.0 specification snapshots, README, and nested license. Its upstream tests are copied
 under `tests/test_openapi_schema`; only their import namespace is changed from
 `openapi_python_client.schema` to `spitzeisen.codegen.schema`.
@@ -14,15 +14,15 @@ The vendored `openapi_schema_pydantic` subpackage was itself derived by openapi-
 patched upstream. Its MIT license is included both with the vendored source and at
 `licenses/openapi-schema-pydantic.txt`.
 
-The loading and parsing frontend is also adapted from the same pinned openapi-python-client commit,
+The input-loading and parsing workflow is also adapted from the same pinned openapi-python-client commit,
 specifically:
 
 - JSON/YAML source selection, URL fetching, and safe `ruamel.yaml` loading;
-- `GeneratorError`, `ParseError`, `PropertyError`, and `ParameterError` data structures;
+- `GeneratorError`, `ParseError`, `PropertyError`, and `ParamError` data structures;
 - the `GeneratorData.from_dict()` component-registry and endpoint-collection workflow;
 - local component `$ref` parsing and request/response reference restrictions;
-- operation-level versus path-level parameter precedence;
-- path-parameter sorting and generated operation IDs;
+- operation-level versus path-level param precedence;
+- path-param sorting and generated operation IDs;
 - ordering exact response codes, response-code ranges, and the default response;
 - request-body reference traversal and circular-reference detection.
 

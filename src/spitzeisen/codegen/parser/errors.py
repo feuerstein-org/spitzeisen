@@ -5,7 +5,7 @@ from enum import Enum
 
 from pydantic import BaseModel
 
-__all__ = ["ErrorLevel", "GeneratorError", "ParameterError", "ParseError", "PropertyError"]
+__all__ = ["ErrorLevel", "GeneratorError", "ParamError", "ParseError", "PropertyError"]
 
 
 class ErrorLevel(Enum):
@@ -41,7 +41,7 @@ class PropertyError(ParseError):
 
 
 @dataclass
-class ParameterError(ParseError):
-    """An error encountered while creating a parameter."""
+class ParamError(ParseError):
+    """An error encountered while creating a param."""
 
-    header = "Problem creating a Parameter: "
+    header = "Problem creating a Param: "

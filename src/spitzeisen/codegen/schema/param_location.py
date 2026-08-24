@@ -1,8 +1,8 @@
 from enum import StrEnum
 
 
-class ParameterLocation(StrEnum):
-    """The places Parameters can be put when calling an Endpoint"""
+class ParamLocation(StrEnum):
+    """The places params can be put when calling an OpenAPI operation."""
 
     QUERY = "query"
     PATH = "path"

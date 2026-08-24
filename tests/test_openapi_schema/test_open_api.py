@@ -40,6 +40,6 @@ def test_parse_with_callback():
     }
 
     open_api = OpenAPI.model_validate(data)
-    create_endpoint = open_api.paths["/create"]
-    assert "200" in create_endpoint.post.responses
-    assert "200" in create_endpoint.post.callbacks["event"]["callback"].post.responses
+    create_path = open_api.paths["/create"]
+    assert "200" in create_path.post.responses
+    assert "200" in create_path.post.callbacks["event"]["callback"].post.responses

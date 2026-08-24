@@ -1,22 +1,23 @@
-"""The upstream-shaped OpenAPI loading and parser workflow."""
+"""Code-generation input loading and the upstream-shaped OpenAPI parser workflow."""
 
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from spitzeisen.codegen import load_yaml_or_json
+from spitzeisen.codegen.exceptions import CodegenError
+from spitzeisen.codegen.inputs import load_mapping, parse_openapi
 from spitzeisen.codegen.ir import (
     HTTPMethod,
     LiteralType,
-    ParameterLocation,
+    ParamLocationIR,
     PrimitiveKind,
     PrimitiveType,
     ReferenceType,
     UnionType,
 )
 from spitzeisen.codegen.manifest import Manifest
-from spitzeisen.codegen.parser import GeneratorData
-from spitzeisen.codegen.parser.errors import GeneratorError
+from spitzeisen.codegen.parser import ParsedOpenAPI
 from spitzeisen.codegen.policy import compile_manifest
 
 
@@ -29,25 +30,36 @@ def openapi_document(*, version: str = "3.1.0", paths: dict[str, object] | None 
     }
 
 
-def parsed(spec: dict[str, Any]) -> GeneratorData:
+def parsed(spec: dict[str, Any]) -> ParsedOpenAPI:
     """Parse a fixture and assert that hydration succeeded."""
-    result = GeneratorData.from_dict(spec)
-    assert isinstance(result, GeneratorData)
-    return result
+    return ParsedOpenAPI.from_dict(spec)
 
 
 def test_yaml_and_json_loading_match_upstream_content_type_rules() -> None:
     """Exact JSON content types select JSON; every other source is parsed as YAML."""
-    as_json = load_yaml_or_json(b'{"openapi": "3.1.0"}', "application/json")
-    as_yaml = load_yaml_or_json(b"openapi: 3.1.0\n", "application/yaml")
+    as_json = load_mapping(b'{"openapi": "3.1.0"}', "application/json")
+    as_yaml = load_mapping(b"openapi: 3.1.0\n", "application/yaml")
 
     assert as_json == {"openapi": "3.1.0"}
     assert as_yaml == {"openapi": "3.1.0"}
 
 
+def test_document_loading_raises_for_invalid_or_non_mapping_input() -> None:
+    """Fatal source failures use exceptions and reject unusable top-level values early."""
+    with pytest.raises(CodegenError, match="Expecting property name"):
+        load_mapping(b"{", "application/json")
+    with pytest.raises(CodegenError, match="mapping at its top level"):
+        load_mapping(b"[]", "application/json")
+
+
 def test_pydantic_hydration_is_the_only_document_validation_layer() -> None:
-    """The frontend returns upstream-style errors instead of structured diagnostics."""
-    invalid = GeneratorData.from_dict(openapi_document(version="3.2.0"))
+    """The parser raises Pydantic errors and the input layer adds CLI-facing context."""
+    invalid = openapi_document(version="3.2.0")
+    with pytest.raises(ValidationError, match=r"Only OpenAPI versions 3\.1\.\* are supported"):
+        ParsedOpenAPI.from_dict(invalid)
+    with pytest.raises(CodegenError, match=r"Only OpenAPI versions 3\.1\.\* are supported") as raised:
+        parse_openapi(invalid)
+
     permissive = parsed(
         openapi_document(
             paths={
@@ -63,14 +75,22 @@ def test_pydantic_hydration_is_the_only_document_validation_layer() -> None:
         ),
     )
 
-    assert isinstance(invalid, GeneratorError)
-    assert invalid.header == "Failed to parse OpenAPI document"
-    assert "Only OpenAPI versions 3.1.* are supported" in (invalid.detail or "")
-    assert permissive.endpoints[0].path_parameters[0].required is False
+    assert raised.value.header == "Failed to parse OpenAPI document"
+    assert isinstance(raised.value.__cause__, ValidationError)
+    assert permissive.operations[0].path_params[0].required is False
 
 
-def test_local_parameter_references_are_built_before_endpoints() -> None:
-    """Reusable parameters are resolved through the component registry."""
+def test_input_layer_adds_the_swagger_hint_without_discarding_the_validation_error() -> None:
+    """Swagger guidance is presentation policy layered over the original Pydantic failure."""
+    with pytest.raises(CodegenError) as raised:
+        parse_openapi({"swagger": "2.0", "info": {"title": "Old API", "version": "1.0"}, "paths": {}})
+
+    assert "You may be trying to use a Swagger document" in (raised.value.detail or "")
+    assert isinstance(raised.value.__cause__, ValidationError)
+
+
+def test_local_param_references_are_built_before_operations() -> None:
+    """Reusable params are resolved through the component registry."""
     spec = {
         **openapi_document(
             paths={
@@ -94,15 +114,15 @@ def test_local_parameter_references_are_built_before_endpoints() -> None:
         },
     }
 
-    operation = parsed(spec).endpoints[0]
+    operation = parsed(spec).operations[0]
 
-    assert operation.parameters[0].wire_name == "account_id"
-    assert operation.parameters[0].location is ParameterLocation.PATH
-    assert operation.parameters[0].schema == PrimitiveType(PrimitiveKind.INTEGER)
+    assert operation.params[0].wire_name == "account_id"
+    assert operation.params[0].location is ParamLocationIR.PATH
+    assert operation.params[0].schema == PrimitiveType(PrimitiveKind.INTEGER)
 
 
-def test_remote_parameter_references_become_endpoint_warnings() -> None:
-    """Unsupported references omit that endpoint, as they do upstream."""
+def test_remote_param_references_become_operation_warnings() -> None:
+    """Unsupported references omit that operation, as they do upstream."""
     spec = openapi_document(
         paths={
             "/things": {
@@ -115,15 +135,15 @@ def test_remote_parameter_references_become_endpoint_warnings() -> None:
     )
 
     result = parsed(spec)
-    collection = result.endpoint_collections_by_tag["default"]
+    collection = result.operation_collections_by_tag["default"]
 
-    assert collection.endpoints == []
+    assert collection.operations == []
     assert len(collection.parse_errors) == 1
     assert "Remote references" in (collection.parse_errors[0].detail or "")
 
 
-def test_parameter_precedence_path_order_and_response_patterns_follow_upstream() -> None:
-    """Operation parameters win, path parameters are sorted, and responses use parser precedence."""
+def test_param_precedence_path_order_and_response_patterns_follow_upstream() -> None:
+    """Operation params win, path params are sorted, and responses use parser precedence."""
     spec = openapi_document(
         paths={
             "/accounts/{account_id}/{record_id}": {
@@ -152,14 +172,14 @@ def test_parameter_precedence_path_order_and_response_patterns_follow_upstream()
 
     assert operation is not None
     assert operation.method is HTTPMethod.GET
-    assert [parameter.wire_name for parameter in operation.parameters] == ["account_id", "record_id", "region"]
-    assert operation.parameters[2].schema == LiteralType(("eu", "us"))
-    assert operation.parameters[2].default == "eu"
+    assert [param.wire_name for param in operation.params] == ["account_id", "record_id", "region"]
+    assert operation.params[2].schema == LiteralType(("eu", "us"))
+    assert operation.params[2].default == "eu"
     assert [response.status.raw for response in operation.responses] == ["200", "404", "2XX", "default"]
 
 
 def test_operation_id_selection_still_checks_manifest_wire_drift() -> None:
-    """An operation ID selects an endpoint without concealing a path change."""
+    """An operation ID selects an operation without concealing a path change."""
     openapi = parsed(
         openapi_document(
             paths={
@@ -177,7 +197,7 @@ def test_operation_id_selection_still_checks_manifest_wire_drift() -> None:
         "base_url": "https://api.example.test",
         "package": "example_sdk",
         "client_name": "ExampleApi",
-        "endpoints": {
+        "operations": {
             "things": {
                 "operation_id": "listThings",
                 "path": "/things",
@@ -189,8 +209,8 @@ def test_operation_id_selection_still_checks_manifest_wire_drift() -> None:
 
     client = compile_manifest(Manifest.model_validate(manifest_data), openapi)
 
-    assert client.endpoints[0].path == "/things"
-    manifest_data["endpoints"]["things"]["path"] = "/renamed"
+    assert client.operations[0].path == "/things"
+    manifest_data["operations"]["things"]["path"] = "/renamed"
     with pytest.raises(ValueError, match="resolves to GET /things"):
         compile_manifest(Manifest.model_validate(manifest_data), openapi)
 
@@ -207,7 +227,7 @@ def test_nullable_and_reference_schemas_remain_generator_neutral() -> None:
         **openapi_document(version="3.0.4", paths={"/things": {"get": {"responses": responses}}}),
         "components": {"schemas": {"Thing": {"type": "string", "nullable": True}}},
     }
-    response_type = parsed(v30).endpoints[0].responses[0].content[0].schema
+    response_type = parsed(v30).operations[0].responses[0].content[0].schema
 
     assert isinstance(response_type, ReferenceType)
     assert response_type.suggested_name == "Thing"
@@ -224,7 +244,7 @@ def test_nullable_and_reference_schemas_remain_generator_neutral() -> None:
             },
         },
     )
-    schema = parsed(inline).endpoints[0].parameters[0].schema
+    schema = parsed(inline).operations[0].params[0].schema
 
     assert schema == UnionType((PrimitiveType(PrimitiveKind.STRING), PrimitiveType(PrimitiveKind.NULL)))
     assert all(word not in repr(schema) for word in ("Jinja", "Unset", "Import"))

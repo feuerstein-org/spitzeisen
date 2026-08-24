@@ -12,8 +12,8 @@ the following fields are used with [alias](https://pydantic-docs.helpmanual.io/u
 | ----- | ----------------------- | -------------------------- |
 | Header[*](#header_param_in) | param_in | in |
 | MediaType | media_type_schema | schema |
-| Parameter | param_in | in |
-| Parameter | param_schema | schema |
+| Param | param_in | in |
+| Param | param_schema | schema |
 | PathItem | ref | $ref |
 | Reference | ref | $ref |
 | SecurityScheme | security_scheme_in | in |

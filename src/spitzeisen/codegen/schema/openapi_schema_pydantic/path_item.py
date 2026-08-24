@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .parameter import Parameter
+from .param import Param
 from .reference import ReferenceOr
 from .server import Server
 
@@ -15,7 +15,7 @@ class PathItem(BaseModel):
     Describes the operations available on a single path.
     A Path Item MAY be empty, due to [ACL constraints](#securityFiltering).
     The path itself is still exposed to the documentation viewer
-    but they will not know which operations and parameters are available.
+    but they will not know which operations and params are available.
 
     References:
         - https://swagger.io/docs/specification/paths-and-operations/
@@ -35,7 +35,7 @@ class PathItem(BaseModel):
     patch: "Operation | None" = None
     trace: "Operation | None" = None
     servers: list[Server] | None = None
-    parameters: list[ReferenceOr[Parameter]] | None = None
+    params: list[ReferenceOr[Param]] | None = Field(default=None, alias="parameters")
     model_config = ConfigDict(
         # `Operation` is an unresolvable forward reference, will rebuild in `__init__.py`:
         defer_build=True,

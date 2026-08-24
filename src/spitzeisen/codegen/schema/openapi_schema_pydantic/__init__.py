@@ -24,7 +24,7 @@ __all__ = [
     "OAuthFlows",
     "OpenAPI",
     "Operation",
-    "Parameter",
+    "Param",
     "PathItem",
     "Paths",
     "Reference",
@@ -56,7 +56,7 @@ from .oauth_flow import OAuthFlow
 from .oauth_flows import OAuthFlows
 from .open_api import OpenAPI
 from .operation import Operation
-from .parameter import Parameter
+from .param import Param
 from .path_item import PathItem
 from .paths import Paths
 from .reference import Reference
@@ -77,7 +77,7 @@ Components.model_rebuild()
 Encoding.model_rebuild()
 MediaType.model_rebuild()
 OpenAPI.model_rebuild()
-Parameter.model_rebuild()
+Param.model_rebuild()
 Header.model_rebuild()
 RequestBody.model_rebuild()
 Response.model_rebuild()

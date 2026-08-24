@@ -2,18 +2,18 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..parameter_location import ParameterLocation
+from ..param_location import ParamLocation
 from .example import Example
 from .media_type import MediaType
 from .reference import ReferenceOr
 from .schema import Schema
 
 
-class Parameter(BaseModel):
+class Param(BaseModel):
     """
-    Describes a single operation parameter.
+    Describes a single operation param.
 
-    A unique parameter is defined by a combination of a [name](#parameterName) and [location](#parameterIn).
+    A unique param is defined by a combination of a [name](#paramName) and [location](#paramIn).
 
     References:
         - https://swagger.io/docs/specification/describing-parameters/
@@ -23,7 +23,7 @@ class Parameter(BaseModel):
     """
 
     name: str
-    param_in: ParameterLocation = Field(alias="in")
+    param_in: ParamLocation = Field(alias="in")
     description: str | None = None
     required: bool = False
     deprecated: bool = False

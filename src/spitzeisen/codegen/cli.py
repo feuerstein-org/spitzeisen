@@ -13,12 +13,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from pprint import pformat
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
-from pydantic import ValidationError
 
-from spitzeisen.codegen import get_document, load_yaml_or_json
+from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.generate import (
     GeneratedModule,
     format_python,
@@ -27,10 +26,12 @@ from spitzeisen.codegen.generate import (
     model_exports_module,
     prune_spec,
 )
-from spitzeisen.codegen.manifest import Manifest
-from spitzeisen.codegen.parser import GeneratorData
-from spitzeisen.codegen.parser.errors import ErrorLevel, GeneratorError, ParseError
-from spitzeisen.codegen.policy import ClientPlan, compile_manifest
+from spitzeisen.codegen.inputs import load_compile_inputs
+
+if TYPE_CHECKING:
+    from spitzeisen.codegen.manifest import Manifest
+    from spitzeisen.codegen.parser.errors import ParseError
+    from spitzeisen.codegen.policy import ClientPlan
 
 DEFAULT_MODEL_BASE_CLASS = "spitzeisen.SpitzeisenModel"
 DEFAULT_HTTP_TIMEOUT = 5
@@ -44,7 +45,7 @@ class Config:
     """Resolved command-line configuration."""
 
     source: str | Path
-    config_path: Path
+    manifest_path: Path
     output_path: Path
     file_encoding: str
     base_class: str
@@ -52,21 +53,11 @@ class Config:
 
 
 @dataclass(frozen=True, slots=True)
-class BuildInputs:
-    """Hydrated source inputs and their compiled SDK plan."""
-
-    manifest: Manifest
-    spec: dict[str, Any]
-    client: ClientPlan
-    errors: tuple[GeneratorError, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class RenderResult:
     """Rendered modules and non-fatal parser warnings."""
 
     modules: list[GeneratedModule]
-    errors: tuple[GeneratorError, ...]
+    warnings: tuple[ParseError, ...]
 
 
 main = typer.Typer(name="spitzeisen-gen", no_args_is_help=True)
@@ -81,32 +72,32 @@ def _process_config(
     *,
     url: str | None,
     path: Path | None,
-    config_path: Path,
+    manifest_path: Path,
     output_path: Path,
     file_encoding: str,
     base_class: str,
     http_timeout: int,
 ) -> Config:
-    """Resolve mutually exclusive sources using upstream's CLI rules."""
+    """Validate command options and resolve the selected document source."""
     source: str | Path
     if url and not path:
         source = url
     elif path and not url:
         source = path
     elif url and path:
-        typer.secho("Provide either --url or --path, not both", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        message = "provide either --url or --path, not both"
+        raise typer.BadParameter(message, param_hint="--url / --path")
     else:
-        typer.secho("You must either provide --url or --path", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        message = "provide either --url or --path"
+        raise typer.BadParameter(message, param_hint="--url / --path")
     try:
         codecs.getencoder(file_encoding)
     except LookupError as err:
-        typer.secho(f"Unknown encoding : {file_encoding}", fg=typer.colors.RED)
-        raise typer.Exit(code=1) from err
+        message = f"unknown encoding: {file_encoding}"
+        raise typer.BadParameter(message, param_hint="--file-encoding") from err
     return Config(
         source=source,
-        config_path=config_path,
+        manifest_path=manifest_path,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -114,37 +105,35 @@ def _process_config(
     )
 
 
-def _print_parser_error(err: GeneratorError, color: str) -> None:
-    """Print one upstream-style generation error."""
+def _print_parser_warning(err: ParseError) -> None:
+    """Print one recoverable parser warning."""
+    color = typer.colors.YELLOW
     typer.secho(err.header, bold=True, fg=color, err=True)
     typer.echo(err=True)
     if err.detail:
         typer.secho(err.detail, fg=color, err=True)
         typer.echo(err=True)
-    if isinstance(err, ParseError) and err.data is not None:
+    if err.data is not None:
         typer.secho(pformat(err.data), fg=color, err=True)
     typer.echo(err=True)
 
 
-def handle_errors(errors: Sequence[GeneratorError], fail_on_warning: bool = False) -> None:
-    """Render parser/generator errors and choose the command exit status."""
-    if not errors:
+def handle_warnings(warnings: Sequence[ParseError], fail_on_warning: bool = False) -> None:
+    """Render recoverable parser warnings and optionally fail the command."""
+    if not warnings:
         return
-    error_level = ErrorLevel.WARNING
     message = "Warning(s) encountered while generating. Client was generated, but some pieces may be missing"
-    header_color = typer.colors.BRIGHT_YELLOW
-    color = typer.colors.YELLOW
-    for item in errors:
-        if item.level is ErrorLevel.ERROR:
-            error_level = ErrorLevel.ERROR
-            message = "Error(s) encountered while generating, client was not created"
-            header_color = typer.colors.BRIGHT_RED
-            color = typer.colors.RED
-            break
-    typer.secho(message, underline=True, bold=True, fg=header_color, err=True)
+    typer.secho(message, underline=True, bold=True, fg=typer.colors.BRIGHT_YELLOW, err=True)
     typer.echo(err=True)
-    for item in errors:
-        _print_parser_error(item, color)
+    for warning in warnings:
+        _print_parser_warning(warning)
+    _print_issue_link()
+    if fail_on_warning:
+        raise typer.Exit(code=1)
+
+
+def _print_issue_link() -> None:
+    """Print the project issue link after an expected generation problem."""
     issue_link = typer.style(
         "https://github.com/feuerstein-org/spitzeisen/issues/new/choose",
         fg=typer.colors.BRIGHT_BLUE,
@@ -155,37 +144,28 @@ def handle_errors(errors: Sequence[GeneratorError], fail_on_warning: bool = Fals
         fg=typer.colors.BLUE,
         err=True,
     )
-    if error_level is ErrorLevel.ERROR or fail_on_warning:
-        raise typer.Exit(code=1)
 
 
-def _command_config(
-    *,
-    url: str | None,
-    path: Path | None,
-    config_path: Path,
-    output_path: Path,
-    file_encoding: str,
-    base_class: str,
-    http_timeout: int,
-) -> Config:
-    """Share source/config processing between generation and drift checking."""
-    return _process_config(
-        url=url,
-        path=path,
-        config_path=config_path,
-        output_path=output_path,
-        file_encoding=file_encoding,
-        base_class=base_class,
-        http_timeout=http_timeout,
-    )
+@contextmanager
+def _handle_codegen_errors() -> Generator[None]:
+    """Turn expected fatal failures into concise CLI output at the outer boundary."""
+    try:
+        yield
+    except CodegenError as err:
+        typer.secho(err.header, bold=True, fg=typer.colors.BRIGHT_RED, err=True)
+        if err.detail:
+            typer.echo(err=True)
+            typer.secho(err.detail, fg=typer.colors.RED, err=True)
+        typer.echo(err=True)
+        _print_issue_link()
+        raise typer.Exit(code=1) from err
 
 
 @main.command()
 def generate(
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
-    config_path: Path = typer.Option(..., "--config", help="Path to the Spitzeisen manifest"),
+    manifest_path: Path = typer.Option(..., "--manifest", help="Path to the Spitzeisen manifest"),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -193,19 +173,17 @@ def generate(
     fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when parser warnings occur"),
 ) -> None:
     """Generate models and the async/sync SDK surfaces in one pass."""
-    config = _command_config(
+    config = _process_config(
         url=url,
         path=path,
-        config_path=config_path,
+        manifest_path=manifest_path,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
         http_timeout=http_timeout,
     )
-    result = _render(config)
-    if isinstance(result, GeneratorError):
-        handle_errors([result])
-        return
+    with _handle_codegen_errors():
+        result = _render(config)
     written = write(result.modules, encoding=config.file_encoding)
     stale_generated = _orphaned_generated_modules(config.output_path, result.modules)
     for stale_path in stale_generated:
@@ -216,14 +194,14 @@ def generate(
     for stale_path in stale_generated:
         typer.echo(f"  removed stale generated module: {stale_path}")
     typer.echo(f"generated {len(written)} files; preserved {len(result.modules) - len(written)} public extensions")
-    handle_errors(result.errors, fail_on_warning)
+    handle_warnings(result.warnings, fail_on_warning)
 
 
 @main.command()
 def check(
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
-    config_path: Path = typer.Option(..., "--config", help="Path to the Spitzeisen manifest"),
+    manifest_path: Path = typer.Option(..., "--manifest", help="Path to the Spitzeisen manifest"),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -231,19 +209,17 @@ def check(
     fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when parser warnings occur"),
 ) -> None:
     """Fail when committed generated output differs from clean generation."""
-    config = _command_config(
+    config = _process_config(
         url=url,
         path=path,
-        config_path=config_path,
+        manifest_path=manifest_path,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
         http_timeout=http_timeout,
     )
-    result = _render(config)
-    if isinstance(result, GeneratorError):
-        handle_errors([result])
-        return
+    with _handle_codegen_errors():
+        result = _render(config)
     stale = [module.path for module in result.modules if not is_current(module, encoding=config.file_encoding)]
     stale.extend(_orphaned_generated_modules(config.output_path, result.modules))
     if stale:
@@ -252,22 +228,7 @@ def check(
             typer.echo(f"  {stale_path}", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"{len(result.modules)} generated or scaffolded modules are up to date")
-    handle_errors(result.errors, fail_on_warning)
-
-
-def load_manifest(path: Path) -> Manifest | GeneratorError:
-    """Load the manifest with the same YAML/JSON parser used for OpenAPI."""
-    try:
-        loaded = load_yaml_or_json(path.read_bytes(), "application/json" if path.suffix == ".json" else None)
-    except OSError as err:
-        return GeneratorError(header="Unable to read config", detail=str(err))
-    if isinstance(loaded, GeneratorError):
-        loaded.header = "Unable to parse config"
-        return loaded
-    try:
-        return Manifest.model_validate(loaded)
-    except ValidationError as err:
-        return GeneratorError(header="Unable to parse config", detail=str(err))
+    handle_warnings(result.warnings, fail_on_warning)
 
 
 def write(modules: list[GeneratedModule], *, encoding: str = "utf-8") -> set[Path]:
@@ -310,45 +271,21 @@ def normalize_model_header(source: str) -> str:
     return f"# Generated by datamodel-code-generator from selected OpenAPI operations.\n{source[match.end() :]}"
 
 
-def _load_inputs(config: Config) -> BuildInputs | GeneratorError:
-    """Load, hydrate, parse, and compile the two explicit inputs."""
-    manifest = load_manifest(config.config_path)
-    if isinstance(manifest, GeneratorError):
-        return manifest
-    try:
-        spec = get_document(source=config.source, timeout=config.http_timeout)
-    except OSError as err:
-        return GeneratorError(header="Could not read OpenAPI document from provided path", detail=str(err))
-    if isinstance(spec, GeneratorError):
-        return spec
-    openapi = GeneratorData.from_dict(spec)
-    if isinstance(openapi, GeneratorError):
-        return openapi
-    try:
-        client = compile_manifest(manifest, openapi)
-    except ValueError as err:
-        return GeneratorError(detail=str(err))
-    errors: list[GeneratorError] = list(openapi.errors)
-    for collection in openapi.endpoint_collections_by_tag.values():
-        errors.extend(collection.parse_errors)
-    return BuildInputs(manifest=manifest, spec=spec, client=client, errors=tuple(errors))
-
-
-def _render(config: Config) -> RenderResult | GeneratorError:
+def _render(config: Config) -> RenderResult:
     """Compile all inputs and render the complete output tree."""
-    inputs = _load_inputs(config)
-    if isinstance(inputs, GeneratorError):
-        return inputs
-    handwritten_error = _validate_handwritten_models(inputs.client, config.output_path)
-    if handwritten_error is not None:
-        return handwritten_error
+    inputs = load_compile_inputs(
+        source=config.source,
+        manifest_path=config.manifest_path,
+        timeout=config.http_timeout,
+    )
+    _validate_handwritten_models(inputs.client, config.output_path)
     modules = generate_plan(inputs.client, config.output_path)
-    generated_endpoints = tuple(endpoint for endpoint in inputs.client.endpoints if endpoint.generate_model)
-    if generated_endpoints:
+    generated_operations = tuple(operation for operation in inputs.client.operations if operation.generate_model)
+    if generated_operations:
         try:
             model_source = _generate_model_source(
                 spec=inputs.spec,
-                working_directory=config.config_path.parent,
+                working_directory=config.manifest_path.parent,
                 manifest=inputs.manifest,
                 client=inputs.client,
                 package_root=config.output_path,
@@ -357,13 +294,13 @@ def _render(config: Config) -> RenderResult | GeneratorError:
             )
         except subprocess.CalledProcessError as err:
             detail = (err.stderr or err.stdout or str(err)).strip()
-            return GeneratorError(header="Model generation failed", detail=detail)
+            raise CodegenError(header="Model generation failed", detail=detail) from err
         generated_names = set(generated_model_names(model_source))
         missing_models = sorted(
-            endpoint.model for endpoint in generated_endpoints if endpoint.model not in generated_names
+            operation.model for operation in generated_operations if operation.model not in generated_names
         )
         if missing_models:
-            return GeneratorError(
+            raise CodegenError(
                 detail=(
                     f"the model backend did not generate response models {missing_models}; "
                     "check response schema titles or set `generate_model: false`"
@@ -371,20 +308,21 @@ def _render(config: Config) -> RenderResult | GeneratorError:
             )
         modules.append(GeneratedModule(config.output_path / "models" / "_generated.py", model_source))
         modules.append(model_exports_module(inputs.client, config.output_path, model_source))
-    return RenderResult(modules=modules, errors=inputs.errors)
+    return RenderResult(modules=modules, warnings=inputs.warnings)
 
 
-def _validate_handwritten_models(client: ClientPlan, package_root: Path) -> GeneratorError | None:
-    """Require handwritten response-model modules for endpoints which opt out."""
+# TODO: look into how this flag actually works
+def _validate_handwritten_models(client: ClientPlan, package_root: Path) -> None:
+    """Require handwritten response-model modules for operations which opt out."""
     missing = [
-        endpoint
-        for endpoint in client.endpoints
-        if not endpoint.generate_model and not (package_root / "models" / f"{endpoint.key}.py").exists()
+        operation
+        for operation in client.operations
+        if not operation.generate_model and not (package_root / "models" / f"{operation.key}.py").exists()
     ]
     if not missing:
-        return None
-    paths = [f"models/{endpoint.key}.py ({endpoint.model})" for endpoint in missing]
-    return GeneratorError(detail=f"generate_model=false requires handwritten model modules: {paths}")
+        return
+    paths = [f"models/{operation.key}.py ({operation.model})" for operation in missing]
+    raise CodegenError(detail=f"generate_model=false requires handwritten model modules: {paths}")
 
 
 def _generate_model_source(

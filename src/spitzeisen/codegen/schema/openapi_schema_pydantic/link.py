@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .server import Server
 
@@ -16,7 +16,7 @@ class Link(BaseModel):
 
     For computing links, and providing instructions to execute them,
     a [runtime expression](#runtimeExpression) is used for accessing values in an operation
-    and using them as parameters while invoking the linked operation.
+    and using them as params while invoking the linked operation.
 
     References:
         - https://swagger.io/docs/specification/links/
@@ -26,7 +26,7 @@ class Link(BaseModel):
 
     operationRef: str | None = None
     operationId: str | None = None
-    parameters: dict[str, Any] | None = None
+    params: dict[str, Any] | None = Field(default=None, alias="parameters")
     requestBody: Any | None = None
     description: str | None = None
     server: Server | None = None

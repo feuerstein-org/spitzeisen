@@ -65,9 +65,9 @@ def sync_client_config(sync_http_client: Client) -> SyncSpitzeisenConfig:
 @pytest.fixture
 def mock_api_factory(mocker: object) -> MockApiFactory:
     """
-    Build endpoint instances whose I/O helpers are stubbed.
+    Build operation instances whose I/O helpers are stubbed.
 
-    For testing endpoint logic — parameter coercion, validation, envelope handling — without
+    For testing operation logic — param coercion, validation, envelope handling — without
     involving the request path at all. Requires pytest-mock.
     """
     return MockApiFactory(mocker)

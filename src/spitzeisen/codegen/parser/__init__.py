@@ -1,5 +1,5 @@
-"""Turn the vendored OpenAPI Pydantic models into generator data."""
+"""Turn the vendored OpenAPI Pydantic models into parsed OpenAPI data."""
 
-from .openapi import Endpoint, EndpointCollection, GeneratorData
+from .openapi import OperationCollection, ParsedOpenAPI, ParsedOperation
 
-__all__ = ["Endpoint", "EndpointCollection", "GeneratorData"]
+__all__ = ["OperationCollection", "ParsedOpenAPI", "ParsedOperation"]

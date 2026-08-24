@@ -61,15 +61,15 @@ class HeaderKey:
 
 
 class QueryParamAuth:
-    """An API key carried as a query parameter, e.g. `?api_token=<key>`."""
+    """An API key carried as a query param, e.g. `?api_token=<key>`."""
 
     def __init__(self, name: str, key: str) -> None:
-        """Store the parameter name and key."""
+        """Store the param name and key."""
         self._name = name
         self._key = key
 
     def apply(self, headers: dict[str, str], params: dict[str, str]) -> None:
-        """Set the configured query parameter."""
+        """Set the configured query param."""
         params[self._name] = self._key
 
     def __repr__(self) -> str:

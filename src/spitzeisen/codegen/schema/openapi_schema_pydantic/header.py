@@ -1,12 +1,12 @@
 from pydantic import ConfigDict, Field
 
-from ..parameter_location import ParameterLocation
-from .parameter import Parameter
+from ..param_location import ParamLocation
+from .param import Param
 
 
-class Header(Parameter):
+class Header(Param):
     """
-    The Header Object follows the structure of the [Parameter Object](#parameterObject) with the following changes:
+    The Header Object follows the structure of the [Param Object](#parameterObject) with the following changes:
 
     1. `name` MUST NOT be specified, it is given in the corresponding `headers` map.
     2. `in` MUST NOT be specified, it is implicitly in `header`.
@@ -20,9 +20,9 @@ class Header(Parameter):
     """
 
     name: str = Field(default="")
-    param_in: ParameterLocation = Field(default=ParameterLocation.HEADER, alias="in")
+    param_in: ParamLocation = Field(default=ParamLocation.HEADER, alias="in")
     model_config = ConfigDict(
-        # `Parameter` is not build yet, will rebuild in `__init__.py`:
+        # `Param` is not built yet, will rebuild in `__init__.py`:
         defer_build=True,
         extra="allow",
         populate_by_name=True,

@@ -7,8 +7,8 @@ backoff, rate limiting, pagination, batch validation. spitzeisen provides it onc
 pluggable rate limiting, pagination and auth — and knows nothing about the domain your API serves.
 
 > **Alpha software.** Spitzeisen is an early project: breaking changes are expected. It currently
-> supports GET endpoints with JSON responses only. Non-GET methods, request bodies, cookie
-> parameters, OpenAPI Parameter Object `content`, and `deepObject` or `allowReserved` query
+> supports GET operations with JSON responses only. Non-GET methods, request bodies, cookie
+> params, OpenAPI Param Object `content`, and `deepObject` or `allowReserved` query
 > serialization are not supported yet; they are planned for a future release.
 
 ```bash
@@ -24,12 +24,12 @@ from spitzeisen import (
     AsyncSpitzeisenConfig,
     NoPagination,
     QueryParamAuth,
-    SpitzeisenEndpointSpec,
+    SpitzeisenOperationSpec,
     async_single_bucket,
     serialize_query_param,
 )
 
-FORECAST = SpitzeisenEndpointSpec(
+FORECAST = SpitzeisenOperationSpec(
     path="/data/2.5/forecast",
     pagination=NoPagination(results_key="list"),
 )
@@ -85,13 +85,13 @@ with SyncWeatherApi(sync_config) as api:
 ```
 
 Anything tied to one surface carries an `Async`/`Sync` prefix, always as a prefix. An unmarked
-name — `SpitzeisenEndpointSpec`, every shared strategy and exception — is available to both.
+name — `SpitzeisenOperationSpec`, every shared strategy and exception — is available to both.
 
 ## What you get
 
 | Concern | How |
 | --- | --- |
-| HTTP | httpx2, confined to the request core so no httpx2 type — exception or response — reaches your endpoint signatures |
+| HTTP | httpx2, confined to the request core so no httpx2 type — exception or response — reaches your operation signatures |
 | Rate limiting | Any object taking a cost and acting as a context manager. Ships a smooth [steindamm](https://github.com/feuerstein-org/steindamm) bucket, local or redis-backed |
 | Retries | Exponential backoff with a floor, for 429, 5xx and transport faults, raising typed errors |
 | Pagination | `PageNumber`, `NoPagination`, or your own — two methods, no base class |
@@ -109,7 +109,7 @@ class AsyncLimiter(Protocol):
     def __call__(self, cost: float, /) -> AbstractAsyncContextManager[object]: ...
 ```
 
-Each endpoint has one scalar cost. steindamm's buckets satisfy the protocol with no adapter.
+Each operation has one scalar cost. steindamm's buckets satisfy the protocol with no adapter.
 
 ## Code generation (optional)
 
@@ -121,16 +121,16 @@ OpenAPI schema is incomplete or needs entirely custom behavior.
 Generation is one transaction, including Pydantic models and both client surfaces:
 
 ```bash
-spitzeisen-gen generate --path spec/openapi.yaml --config spec/manifest.yaml --output-path src/example_api
-spitzeisen-gen check --path spec/openapi.yaml --config spec/manifest.yaml --output-path src/example_api
+spitzeisen-gen generate --path spec/openapi.yaml --manifest spec/manifest.yaml --output-path src/example_api
+spitzeisen-gen check --path spec/openapi.yaml --manifest spec/manifest.yaml --output-path src/example_api
 ```
 
 Use `--url` instead of `--path` to fetch a document. `check` is suitable for CI and compares models
-as well as endpoints. The compiler architecture and file-by-file responsibilities are documented in
+as well as operations. The compiler architecture and file-by-file responsibilities are documented in
 [docs/codegen-architecture.md](docs/codegen-architecture.md).
 
-Endpoint generation separates replaceable implementation from public extension points. Given an
-endpoint named `splits`, it produces this layout for each surface:
+Operation generation separates replaceable implementation from public extension points. Given an
+operation named `splits`, it produces this layout for each surface:
 
 ```text
 example_api/
@@ -140,20 +140,20 @@ example_api/
   _async/
     _generated/
       splits.py       # AsyncSplitsApiBase; regenerated
-      client.py       # AsyncExampleApiBase and endpoint wiring; regenerated
+      client.py       # AsyncExampleApiBase and operation wiring; regenerated
     splits.py         # AsyncSplitsApi; created once, safe to customize
     client.py         # AsyncExampleApi; created once, safe to customize
   _sync/
     _generated/
       splits.py       # SyncSplitsApiBase; regenerated
-      client.py       # SyncExampleApiBase and endpoint wiring; regenerated
+      client.py       # SyncExampleApiBase and operation wiring; regenerated
     splits.py         # SyncSplitsApi; created once, safe to customize
     client.py         # SyncExampleApi; created once, safe to customize
 ```
 
-The public model, endpoint, and client files can remain empty subclasses or carry SDK-specific
+The public model, operation, and client files can remain empty subclasses or carry SDK-specific
 validators and behaviour. Running generation again preserves them while updating the `_generated`
-bases. The aggregate client shares one config across its endpoint properties and owns their
+bases. The aggregate client shares one config across its operation properties and owns their
 context-manager lifecycle:
 
 ```python
@@ -171,8 +171,8 @@ also populated by field name. Keeping that policy in one shared base avoids repe
 `model_config` in every generated class.
 
 The schema models in `models/_generated.py` are replaceable implementation. For every generated
-endpoint model, codegen creates a public subclass such as `models/splits.py` exactly once, and the
-endpoint imports that public class. Model-specific validators therefore live safely outside
+operation model, codegen creates a public subclass such as `models/splits.py` exactly once, and the
+operation imports that public class. Model-specific validators therefore live safely outside
 generated code:
 
 ```python
@@ -200,17 +200,38 @@ names resolve to the exact generated classes used by those responses.
 A client needing shared behaviour can still provide a base derived from `SpitzeisenModel` and
 select it with `spitzeisen-gen generate --base-class my_client.model_base.ClientModel`. Set
 `generate_model: false` for an entirely handwritten response model; define it under the public
-`models/<endpoint>.py` module expected by that endpoint.
+`models/<operation>.py` module expected by that operation.
 
-Generated GET endpoints honor OpenAPI query serialization for arrays and objects: `form`,
+Generated GET operations honor OpenAPI query serialization for arrays and objects: `form`,
 `spaceDelimited`, and `pipeDelimited`, including `explode`. `deepObject` and `allowReserved`
 query serialization are not supported yet. Query values are always percent-encoded by httpx2.
-Set OpenAPI's `style` and `explode` on a query parameter when its wire representation differs from
+Set OpenAPI's `style` and `explode` on a query param when its wire representation differs from
 the defaults. Use manifest `coercion_style` for Spitzeisen's caller-input coercions such as `date`,
 `comma_list`, or `comma_choice_list`.
 
-For a generated endpoint that controls the number of records requested per page, name that
-vendor parameter explicitly. `max_page_size` may be omitted when the matching OpenAPI schema
+### Client defaults for request params
+
+The manifest's `client_default` is an SDK policy: it is a Python literal placed in the generated
+method signature and supplied when the caller omits that argument. It is distinct from an
+OpenAPI schema `default`; an optional schema default remains a fallback when no manifest override
+is supplied, while `client_default` takes precedence and may back an OpenAPI-required query or
+header param without making that param optional on the wire:
+
+```yaml
+params:
+  limit:
+    client_default: "100"
+```
+
+The generated method is `limit: int = 100`, while request serialization still treats `limit` as
+required and rejects an explicit `None`. Client defaults should be stable, safe vendor policy;
+avoid using them for identifiers, credentials, timestamps, or other context-dependent values.
+Path params are keyword-only as well, so a defaulted path param can safely precede another
+required path param. The generated URL still receives the default value; choose path defaults
+only when silently selecting that resource is intentional.
+
+For a generated operation that controls the number of records requested per page, name that
+vendor param explicitly. `max_page_size` may be omitted when the matching OpenAPI schema
 declares its maximum:
 
 ```yaml
@@ -222,7 +243,7 @@ max_page_size: 100
 This per-request setting is separate from the generated method's `max_results`, which caps the
 total number of records returned across all pages.
 
-Sorting wire names are explicit for the same reason. For separate vendor parameters:
+Sorting wire names are explicit for the same reason. For separate vendor params:
 
 ```yaml
 sort_style: param
@@ -231,7 +252,7 @@ order_param: direction
 ```
 
 For a `field.direction` value, use `sort_style: suffix` and omit `order_param`. Generated
-argument types, allowed values, and defaults come from the matching OpenAPI parameters. When
+argument types, allowed values, and defaults come from the matching OpenAPI params. When
 the document does not publish them, the manifest can name client-owned Literal aliases and
 provide defaults:
 
