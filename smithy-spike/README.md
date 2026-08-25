@@ -2,6 +2,8 @@
 
 This directory is an isolated experiment. It does not change Spitzeisen's runtime or generator.
 See [RESULTS.md](RESULTS.md) for the decision and detailed findings.
+See [CLIENT_USABILITY.md](CLIENT_USABILITY.md) and the runnable
+[`demo_client_usability.py`](demo_client_usability.py) for the consumer-facing comparison.
 
 It contains two paths through the current Smithy Python generator:
 
