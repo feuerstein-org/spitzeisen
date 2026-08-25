@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "sources": ["../converter-output-3.0/vendor.smithy", "model"],
+  "maven": {
+    "dependencies": [
+      "software.amazon.smithy:smithy-model:[1.73.0,2.0)",
+      "software.amazon.smithy:smithy-aws-traits:[1.73.0,2.0)",
+      "software.amazon.smithy.python.codegen:core:0.5.0",
+      "com.disneystreaming.alloy:alloy-core:0.3.40",
+      "com.disneystreaming.smithy:smithytranslate-traits:0.7.8"
+    ]
+  },
+  "projections": {
+    "client": {
+      "plugins": {
+        "python-client-codegen": {
+          "service": "vendor#VendorService",
+          "module": "converted_vendor_sdk",
+          "moduleVersion": "0.0.1"
+        }
+      }
+    }
+  }
+}
