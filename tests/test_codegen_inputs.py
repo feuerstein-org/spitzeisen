@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from smithy_fixtures import smithy_model
+from smithy_fixtures import native_weather_model, smithy_model
 
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.inputs import load_compile_inputs, load_mapping, parse_smithy
 from spitzeisen.codegen.ir import HTTPMethod, LiteralType, ParamLocationIR, PrimitiveKind, PrimitiveType
 from spitzeisen.codegen.openapi import project_openapi_for_converter
-from spitzeisen.codegen.policy import TargetSettings
+from spitzeisen.codegen.policy import TargetSettings, compile_model
 from spitzeisen.codegen.traits import PAGE_NUMBER_PAGINATION, SDK_OPERATION
 
 
@@ -192,5 +192,70 @@ def test_whole_input_pipeline_compiles_the_imported_smithy_model(
     assert inputs.client.operations[0].method_name == "list_things"
     assert inputs.client.operations[0].page_size is not None
     assert inputs.client.operations[0].page_size.maximum == 100
+    assert inputs.model_input_type == "openapi"
+    assert inputs.model_schema == spec
     assert inputs.smithy["smithy"] == "2.0"
     assert not inputs.warnings
+
+
+def test_native_smithy_pipeline_builds_a_json_schema_model_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Native Smithy bypasses OpenAPI while retaining the Pydantic backend."""
+    source = tmp_path / "weather.smithy"
+    source.write_text('$version: "2"\nnamespace native.weather\n')
+    overlay = tmp_path / "sdk.smithy"
+    overlay.write_text('$version: "2"\nnamespace native.overlay\n')
+    model = native_weather_model()
+
+    def assemble(imported: dict[str, Any], sources: tuple[Path, ...]) -> dict[str, Any]:
+        assert imported == {"smithy": "2.0", "shapes": {}}
+        assert sources == (source, overlay)
+        return model
+
+    expected_schema = {"$defs": {"Weather": {"type": "object"}}}
+
+    def convert_schema(
+        assembled: dict[str, Any],
+        *,
+        service_id: str,
+        response_shapes: tuple[str, ...],
+        working_directory: Path | None,
+    ) -> dict[str, Any]:
+        assert assembled is model
+        assert service_id == "native.weather#WeatherService"
+        assert response_shapes == ("native.weather#Weather",)
+        assert working_directory == tmp_path
+        return expected_schema
+
+    monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
+    monkeypatch.setattr("spitzeisen.codegen.inputs.smithy_to_json_schema", convert_schema)
+
+    inputs = load_compile_inputs(
+        smithy_sources=(source,),
+        overlays=(overlay,),
+        target=TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
+        timeout=5,
+    )
+
+    assert inputs.model_input_type == "jsonschema"
+    assert inputs.model_schema == expected_schema
+    assert inputs.client.operations[0].model == "Weather"
+    assert inputs.client.response_shapes == ("native.weather#Weather",)
+
+
+def test_native_smithy_service_rename_matches_the_generated_model_name() -> None:
+    """Service renames used by Smithy's converter also reach client annotations."""
+    model = native_weather_model()
+    model["shapes"]["native.weather#WeatherService"]["rename"] = {
+        "native.weather#Weather": "Observation",
+    }
+
+    client = compile_model(
+        TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
+        parse_smithy(model),
+    )
+
+    assert client.operations[0].model == "Observation"
+    assert client.response_shapes == ("native.weather#Weather",)

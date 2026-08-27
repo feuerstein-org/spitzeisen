@@ -32,6 +32,7 @@ from spitzeisen.codegen.openapi import import_openapi
 from spitzeisen.codegen.policy import TargetSettings
 
 if TYPE_CHECKING:
+    from spitzeisen.codegen.inputs import ModelInputType
     from spitzeisen.codegen.parser.errors import ParseError
     from spitzeisen.codegen.policy import ClientPlan
 
@@ -46,7 +47,8 @@ MODEL_HEADER = re.compile(
 class Config:
     """Resolved command-line configuration."""
 
-    source: str | Path
+    source: str | Path | None
+    smithy_sources: tuple[Path, ...]
     overlays: tuple[Path, ...]
     service: str | None
     package: str
@@ -71,7 +73,7 @@ main = typer.Typer(name="spitzeisen-gen", no_args_is_help=True)
 
 @main.callback()
 def cli() -> None:
-    """Import OpenAPI through Smithy and generate a polished Python SDK."""
+    """Generate a polished Python SDK from Smithy or imported OpenAPI."""
 
 
 def _select_source(url: str | None, path: Path | None) -> str | Path:
@@ -87,10 +89,29 @@ def _select_source(url: str | None, path: Path | None) -> str | Path:
     raise typer.BadParameter(message, param_hint="--url / --path")
 
 
-def _process_config(
+def _select_generation_source(
+    url: str | None,
+    path: Path | None,
+    smithy: list[Path] | None,
+) -> tuple[str | Path | None, tuple[Path, ...]]:
+    """Resolve one native Smithy source set or one OpenAPI source."""
+    smithy_sources = tuple(smithy or ())
+    if smithy_sources:
+        if url or path:
+            message = "provide native --smithy sources or an OpenAPI --url/--path, not both"
+            raise typer.BadParameter(message, param_hint="--smithy / --url / --path")
+        return None, smithy_sources
+    if not url and not path:
+        message = "provide --smithy, --url, or --path"
+        raise typer.BadParameter(message, param_hint="--smithy / --url / --path")
+    return _select_source(url, path), ()
+
+
+def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
     *,
     url: str | None,
     path: Path | None,
+    smithy: list[Path] | None,
     overlays: list[Path] | None,
     service: str | None,
     package: str,
@@ -102,7 +123,7 @@ def _process_config(
     http_timeout: int,
 ) -> Config:
     """Validate command options and resolve the selected document source."""
-    source = _select_source(url, path)
+    source, smithy_sources = _select_generation_source(url, path, smithy)
     try:
         codecs.getencoder(file_encoding)
     except LookupError as err:
@@ -110,6 +131,7 @@ def _process_config(
         raise typer.BadParameter(message, param_hint="--file-encoding") from err
     return Config(
         source=source,
+        smithy_sources=smithy_sources,
         overlays=tuple(overlays or ()),
         service=service,
         package=package,
@@ -204,6 +226,7 @@ def import_openapi_command(
 def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parameter
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
+    smithy: list[Path] | None = typer.Option(None, "--smithy", help="Native Smithy source; may be repeated"),
     overlay: list[Path] | None = typer.Option(None, "--overlay", help="Smithy overlay file; may be repeated"),
     service: str | None = typer.Option(None, help="Smithy service shape ID; inferred when the model has one service"),
     package: str = typer.Option(..., help="Importable Python package name"),
@@ -219,6 +242,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
     config = _process_config(
         url=url,
         path=path,
+        smithy=smithy,
         overlays=overlay,
         service=service,
         package=package,
@@ -248,6 +272,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
 def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parameter
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
+    smithy: list[Path] | None = typer.Option(None, "--smithy", help="Native Smithy source; may be repeated"),
     overlay: list[Path] | None = typer.Option(None, "--overlay", help="Smithy overlay file; may be repeated"),
     service: str | None = typer.Option(None, help="Smithy service shape ID; inferred when the model has one service"),
     package: str = typer.Option(..., help="Importable Python package name"),
@@ -263,6 +288,7 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
     config = _process_config(
         url=url,
         path=path,
+        smithy=smithy,
         overlays=overlay,
         service=service,
         package=package,
@@ -318,18 +344,20 @@ def is_current(module: GeneratedModule, *, encoding: str = "utf-8") -> bool:
     return module.create_once or module.path.read_text(encoding=encoding) == module.source
 
 
-def normalize_model_header(source: str) -> str:
+def normalize_model_header(source: str, input_type: ModelInputType = "openapi") -> str:
     """Replace datamodel-code-generator's temporary filename with stable provenance."""
     match = MODEL_HEADER.match(source)
     if match is None:
         return source
-    return f"# Generated by datamodel-code-generator from selected OpenAPI operations.\n{source[match.end() :]}"
+    provenance = "selected OpenAPI operations" if input_type == "openapi" else "the assembled Smithy model"
+    return f"# Generated by datamodel-code-generator from {provenance}.\n{source[match.end() :]}"
 
 
 def _render(config: Config) -> RenderResult:
     """Compile all inputs and render the complete output tree."""
     inputs = load_compile_inputs(
         source=config.source,
+        smithy_sources=config.smithy_sources,
         overlays=config.overlays,
         target=TargetSettings(
             package=config.package,
@@ -345,7 +373,8 @@ def _render(config: Config) -> RenderResult:
     if generated_operations:
         try:
             model_source = _generate_model_source(
-                spec=inputs.spec,
+                schema=inputs.model_schema,
+                input_type=inputs.model_input_type,
                 working_directory=_working_directory(config),
                 client=inputs.client,
                 package_root=config.output_path,
@@ -387,7 +416,8 @@ def _validate_handwritten_models(client: ClientPlan, package_root: Path) -> None
 
 def _generate_model_source(
     *,
-    spec: dict[str, Any],
+    schema: dict[str, Any],
+    input_type: ModelInputType,
     working_directory: Path,
     client: ClientPlan,
     package_root: Path,
@@ -396,12 +426,17 @@ def _generate_model_source(
 ) -> str:
     """Run the replaceable Pydantic model backend and return reproducible source."""
     extra: list[str] = []
+    if input_type == "openapi":
+        extra += ["--openapi-scopes", "paths"]
+    else:
+        extra += ["--skip-root-model", "--collapse-root-models"]
     if aliases := client.model_aliases:
         extra += ["--aliases", json.dumps(aliases)]
     if overrides := client.model_type_overrides:
         extra += ["--type-overrides", json.dumps(overrides)]
-    with _temporary_sibling(working_directory / "openapi", suffix=".json") as model_input:
-        model_input.write_text(json.dumps(prune_spec(spec, client), indent=2), encoding=encoding)
+    model_document = prune_spec(schema, client) if input_type == "openapi" else schema
+    with _temporary_sibling(working_directory / input_type, suffix=".json") as model_input:
+        model_input.write_text(json.dumps(model_document, indent=2), encoding=encoding)
         with _temporary_sibling(package_root / "models" / "generated", suffix=".py") as output:
             subprocess.run(  # noqa: S603
                 [  # noqa: S607
@@ -409,9 +444,7 @@ def _generate_model_source(
                     "--input",
                     str(model_input),
                     "--input-file-type",
-                    "openapi",
-                    "--openapi-scopes",
-                    "paths",
+                    input_type,
                     "--output",
                     str(output),
                     "--output-model-type",
@@ -438,13 +471,15 @@ def _generate_model_source(
                 capture_output=True,
                 text=True,
             )
-            source = normalize_model_header(output.read_text(encoding=encoding))
+            source = normalize_model_header(output.read_text(encoding=encoding), input_type)
     destination = package_root / "models" / "_generated.py"
     return format_python(source, str(destination))
 
 
 def _working_directory(config: Config) -> Path:
     """Choose a writable directory near local inputs for temporary model-backend files."""
+    if config.smithy_sources:
+        return config.smithy_sources[0].parent
     if config.overlays:
         return config.overlays[0].parent
     if isinstance(config.source, Path):

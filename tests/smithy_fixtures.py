@@ -176,3 +176,61 @@ def smithy_model(spec: dict[str, Any]) -> dict[str, Any]:  # noqa: C901, PLR0915
         "operations": [{"target": operation_id} for operation_id in operation_ids],
     }
     return {"smithy": "2.0", "shapes": shapes}
+
+
+def native_weather_model() -> dict[str, Any]:
+    """Build a native Smithy service with a modeled response closure."""
+    return {
+        "smithy": "2.0",
+        "shapes": {
+            "native.weather#WeatherService": {
+                "type": "service",
+                "operations": [{"target": "native.weather#GetWeather"}],
+            },
+            "native.weather#GetWeather": {
+                "type": "operation",
+                "input": {"target": "native.weather#GetWeatherInput"},
+                "output": {"target": "native.weather#GetWeatherOutput"},
+                "traits": {"smithy.api#http": {"method": "GET", "uri": "/weather/{city}", "code": 200}},
+            },
+            "native.weather#GetWeatherInput": {
+                "type": "structure",
+                "members": {
+                    "city": {
+                        "target": "smithy.api#String",
+                        "traits": {
+                            "smithy.api#required": {},
+                            "smithy.api#httpLabel": {},
+                            "smithy.api#documentation": "City to observe.",
+                        },
+                    },
+                },
+            },
+            "native.weather#GetWeatherOutput": {
+                "type": "structure",
+                "members": {
+                    "weather": {
+                        "target": "native.weather#Weather",
+                        "traits": {"smithy.api#required": {}, "smithy.api#httpPayload": {}},
+                    },
+                },
+            },
+            "native.weather#Weather": {
+                "type": "structure",
+                "members": {
+                    "temperature": {
+                        "target": "smithy.api#Float",
+                        "traits": {
+                            "smithy.api#required": {},
+                            "smithy.api#range": {"min": -100, "max": 100},
+                            "smithy.api#documentation": "Air temperature in degrees Celsius.",
+                        },
+                    },
+                    "summary": {
+                        "target": "smithy.api#String",
+                        "traits": {"smithy.api#length": {"min": 1, "max": 200}},
+                    },
+                },
+            },
+        },
+    }

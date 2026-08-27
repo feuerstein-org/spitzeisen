@@ -189,10 +189,12 @@ class OperationPlan:
 class ClientPlan:
     """The complete, renderer-ready SDK plan."""
 
+    service_id: str
     vendor: str
     package: str
     client_name: str
     operations: tuple[OperationPlan, ...]
+    response_shapes: tuple[str, ...]
     model_aliases: dict[str, str]
     model_type_overrides: dict[str, str]
 
@@ -210,22 +212,30 @@ def compile_model(
     if missing:
         message = f"service {service.shape_id} contains operations Spitzeisen could not parse: {missing}"
         raise ValueError(message)
-    selected = (by_id[shape_id] for shape_id in service.operation_ids)
-    operations = tuple(
-        _compile_operation(settings, operation)
-        for operation in selected
-        if (settings := _operation_settings(operation, service)) is not None
-    )
+    operations: list[OperationPlan] = []
+    response_shapes: list[str] = []
+    for shape_id in service.operation_ids:
+        parsed_operation = by_id[shape_id]
+        settings = _operation_settings(parsed_operation, service)
+        if settings is None:
+            continue
+        operation = _compile_operation(settings, parsed_operation)
+        operations.append(operation)
+        if operation.generate_model and (response_shape := _response_shape_id(parsed_operation)) is not None:
+            response_shapes.append(response_shape)
     if not operations:
         msg = f"service {service.shape_id} contains no visible operations"
         raise ValueError(msg)
-    _validate_public_names(operations)
+    compiled_operations = tuple(operations)
+    _validate_public_names(compiled_operations)
     model_settings = customizations or ModelCustomizations({}, {})
     return ClientPlan(
+        service_id=service.shape_id,
         vendor=target.vendor or _humanize_service_name(service.name),
         package=target.package,
         client_name=target.client_name,
-        operations=operations,
+        operations=compiled_operations,
+        response_shapes=tuple(dict.fromkeys(response_shapes)),
         model_aliases=model_settings.aliases,
         model_type_overrides=model_settings.type_overrides,
     )
@@ -258,7 +268,11 @@ def _operation_settings(operation: ParsedOperation, service: ParsedService) -> O
     page = page_number_policy(operation.traits)
     sorting = sorting_policy(operation.traits)
     inferred_model, inferred_shape = _infer_response(operation)
-    model = presentation.model or inferred_model
+    response_shape = _response_shape_id(operation)
+    renamed_model = (
+        service.renames.get(response_shape, inferred_model) if response_shape is not None else inferred_model
+    )
+    model = presentation.model or renamed_model
     if model is None:
         msg = f"operation {operation.shape_id} has no inferable response model; set @sdkOperation(responseModel: ...)"
         raise ValueError(
@@ -320,6 +334,15 @@ def _infer_response(operation: ParsedOperation) -> tuple[str | None, Shape]:
     if isinstance(schema, ReferenceType):
         return schema.suggested_name, "single"
     return None, "single"
+
+
+def _response_shape_id(operation: ParsedOperation) -> str | None:
+    """Return the model shape whose closure must reach the Pydantic backend."""
+    response = next((item for item in operation.responses if item.status.is_success), None)
+    schema = response.content[0].schema if response is not None and response.content else None
+    if isinstance(schema, ArrayType):
+        schema = schema.items
+    return schema.schema_id.reference if isinstance(schema, ReferenceType) else None
 
 
 def _compile_operation(settings: OperationSettings, operation: ParsedOperation) -> OperationPlan:

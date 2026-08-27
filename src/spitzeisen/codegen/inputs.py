@@ -1,10 +1,10 @@
-"""Load OpenAPI, assemble Smithy overlays, and compile the external codegen inputs."""
+"""Load native Smithy or OpenAPI and compile the external codegen inputs."""
 
 import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpcore
 import httpx
@@ -17,14 +17,18 @@ from spitzeisen.codegen.openapi import import_openapi
 from spitzeisen.codegen.parser import ParsedSmithy
 from spitzeisen.codegen.parser.errors import ParseError
 from spitzeisen.codegen.policy import ClientPlan, TargetSettings, compile_model
+from spitzeisen.codegen.smithy_jsonschema import smithy_to_json_schema
 from spitzeisen.codegen.traits import model_customizations
+
+type ModelInputType = Literal["openapi", "jsonschema"]
 
 
 @dataclass(frozen=True, slots=True)
 class BuildInputs:
-    """Original schemas, imported Smithy model, and the compiled SDK plan."""
+    """Pydantic schema, assembled Smithy model, and the compiled SDK plan."""
 
-    spec: dict[str, Any]
+    model_schema: dict[str, Any]
+    model_input_type: ModelInputType
     smithy: dict[str, Any]
     client: ClientPlan
     warnings: tuple[ParseError, ...]
@@ -90,23 +94,43 @@ def parse_smithy(model: dict[str, Any]) -> ParsedSmithy:
 
 def load_compile_inputs(
     *,
-    source: str | Path,
+    source: str | Path | None = None,
+    smithy_sources: tuple[Path, ...] = (),
     overlays: tuple[Path, ...],
     target: TargetSettings,
     timeout: int,
 ) -> BuildInputs:
-    """Load OpenAPI, assemble Smithy and its overlays, then compile one SDK plan."""
-    raw_openapi = load_document(source=source, timeout=timeout)
-    imported = import_openapi(raw_openapi)
-    assembled = assemble_smithy(imported.model, overlays)
+    """Load exactly one model source, assemble Smithy, and compile one SDK plan."""
+    if (source is None) == (not smithy_sources):
+        raise CodegenError(detail="provide either an OpenAPI source or at least one native Smithy source")
+    if source is not None:
+        raw_openapi = load_document(source=source, timeout=timeout)
+        imported = import_openapi(raw_openapi)
+        assembled = assemble_smithy(imported.model, overlays)
+        model_schema = raw_openapi
+        model_input_type: ModelInputType = "openapi"
+        import_warnings = imported.warnings
+    else:
+        assembled = assemble_smithy({"smithy": "2.0", "shapes": {}}, (*smithy_sources, *overlays))
+        model_schema = {}
+        model_input_type = "jsonschema"
+        import_warnings = ()
     smithy = parse_smithy(assembled)
     try:
         client = compile_model(target, smithy, model_customizations(assembled))
     except (TypeError, ValueError) as err:
         raise CodegenError(detail=str(err)) from err
-    warnings = (*imported.warnings, *smithy.errors)
+    if smithy_sources and any(operation.generate_model for operation in client.operations):
+        model_schema = smithy_to_json_schema(
+            assembled,
+            service_id=client.service_id,
+            response_shapes=client.response_shapes,
+            working_directory=smithy_sources[0].parent,
+        )
+    warnings = (*import_warnings, *smithy.errors)
     return BuildInputs(
-        spec=raw_openapi,
+        model_schema=model_schema,
+        model_input_type=model_input_type,
         smithy=assembled,
         client=client,
         warnings=warnings,

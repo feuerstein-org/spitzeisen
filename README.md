@@ -113,11 +113,15 @@ Each operation has one scalar cost. steindamm's buckets satisfy the protocol wit
 
 ## Code generation (optional)
 
-`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`. It imports OpenAPI 3.0 or compatible
-OpenAPI 3.1 through pinned `smithy-translate` 0.7.8, assembles it with the official Smithy CLI and
-any local `.smithy` overlays, and keeps `datamodel-code-generator` as the Pydantic response-model
-backend. Java plus Coursier (`coursier`/`cs`) must be on `PATH`; this repository pins both through
-`mise`.
+`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`. Native Smithy is the primary input. The
+official Smithy CLI assembles the model, and Smithy's official `smithy-jsonschema` library projects
+the selected response closures into the existing `datamodel-code-generator` Pydantic backend. Java
+plus Coursier (`coursier`/`cs`) must be on `PATH`; this repository pins both through `mise`.
+
+OpenAPI 3.0 and compatible OpenAPI 3.1 remain supported as an ingestion path through pinned
+`smithy-translate` 0.7.8. The imported operation model is assembled with any local `.smithy`
+overlays, while the original OpenAPI schema goes directly to the Pydantic backend to avoid losing
+JSON Schema detail in the round trip.
 
 A Smithy overlay supplies facts a mechanical import cannot infer reliably: rate-limit cost,
 page-number pagination, public names, client defaults, and vendor-specific query serialization.
@@ -125,7 +129,17 @@ The overlay is assembled with the converted model, so stale shape references and
 applications fail before generation. Apply `@sdkOperation(generateModel: false)` and provide a
 response model by hand when the source schema is incomplete or needs entirely custom behavior.
 
-Generation is one transaction, including Pydantic models and both client surfaces:
+For a native Smithy project, generation is one transaction including Pydantic models and both
+client surfaces. `--smithy` may be repeated when the model spans multiple files:
+
+```bash
+spitzeisen-gen generate --smithy model/service.smithy \
+  --package example_api --client-name ExampleApi --output-path src/example_api
+spitzeisen-gen check --smithy model/service.smithy \
+  --package example_api --client-name ExampleApi --output-path src/example_api
+```
+
+For a vendor that publishes only OpenAPI, add an optional Smithy customization overlay:
 
 ```bash
 spitzeisen-gen generate --path spec/openapi.yaml --overlay spec/sdk.smithy \
@@ -134,8 +148,11 @@ spitzeisen-gen check --path spec/openapi.yaml --overlay spec/sdk.smithy \
   --package example_api --client-name ExampleApi --output-path src/example_api
 ```
 
-Use `--url` instead of `--path` to fetch a document. `check` is suitable for CI and compares models
-as well as operations. The compiler architecture and file-by-file responsibilities are documented in
+Use `--url` instead of `--path` to fetch an OpenAPI document. Native `--smithy` inputs and OpenAPI
+`--url`/`--path` inputs are mutually exclusive. `check` is suitable for CI and compares models as
+well as operations. A runnable native model is available at
+[`examples/spec/native-weather.smithy`](examples/spec/native-weather.smithy). The compiler
+architecture and file-by-file responsibilities are documented in
 [docs/codegen-architecture.md](docs/codegen-architecture.md).
 
 To inspect the exact intermediate model consumed by the frontend:

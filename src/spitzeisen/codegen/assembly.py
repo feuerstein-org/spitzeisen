@@ -42,16 +42,16 @@ def _assembler_command() -> list[str]:
 
 def assemble_smithy(
     imported: dict[str, Any],
-    overlays: tuple[Path, ...] = (),
+    sources: tuple[Path, ...] = (),
     *,
     working_directory: Path | None = None,
 ) -> dict[str, Any]:
-    """Merge the imported model and external trait overlays with Smithy's own assembler."""
-    missing = [path for path in overlays if not path.is_file()]
+    """Merge an imported model and native Smithy sources with Smithy's own assembler."""
+    missing = [path for path in sources if not path.exists()]
     if missing:
         raise CodegenError(
-            header="Unable to read Smithy overlay",
-            detail=f"overlay files do not exist: {[str(path) for path in missing]}",
+            header="Unable to read Smithy source",
+            detail=f"Smithy source files do not exist: {[str(path) for path in missing]}",
         )
     if not TRAIT_DEFINITIONS.is_file():  # pragma: no cover - packaging integrity guard
         raise CodegenError(
@@ -71,7 +71,7 @@ def assemble_smithy(
             "--flatten",
             str(source),
             str(TRAIT_DEFINITIONS),
-            *(str(path.resolve()) for path in overlays),
+            *(str(path.resolve()) for path in sources),
         ]
         process = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603
     if process.returncode != 0:

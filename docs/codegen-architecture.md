@@ -1,36 +1,45 @@
 # Code-generation architecture
 
-Spitzeisen consumes one assembled Smithy 2.0 model, even when a vendor publishes only OpenAPI:
+Spitzeisen consumes one assembled Smithy 2.0 model. OpenAPI is an optional ingestion path:
 
 ```text
-vendor OpenAPI ── compatibility projection ── smithy-translate 0.7.8
-      │                                         │
-      │                                         ▼
-      │                                  converted Smithy JSON
-      │                                         │
-      │             local .smithy overlays ─────┤
-      │                                         ▼
-      │                              official Smithy assembler
-      │                                         │
-      │                                  Smithy 2.0 JSON AST
-      │                                         │
-      │                                  ParsedSmithy frontend
-      │                                         ▼
-      │                                  typed ClientPlan
-      │                                    │          │
-      │                                    ▼          ▼
-      │                              Jinja clients  public seams
+native .smithy sources ──────────────────────────────┐
+                                                    │
+vendor OpenAPI ─ compatibility projection ─ smithy-translate 0.7.8
+      │                                             │
+      │                                             ▼
+      │                                      converted Smithy JSON
+      │                                             │
+      │                 local .smithy overlays ─────┤
+      │                                             ▼
+      │                                  official Smithy assembler
+      │                                             │
+      │                                      Smithy 2.0 JSON AST
+      │                                       │             │
+      │                                       │             ▼
+      │                                       │    official smithy-jsonschema
+      │                                       │             │
+      │                                       ▼             ▼
+      │                               ParsedSmithy       JSON Schema
+      │                                       │             │
+      │                                       ▼             ▼
+      │                                typed ClientPlan  datamodel-code-generator
+      │                                  │          │       │
+      │                                  ▼          ▼       ▼
+      │                            Jinja clients  public  Pydantic models
       │
-      └──────────────────────────────► datamodel-code-generator
-                                             │
-                                             ▼
-                                      Pydantic models
+      └──────────────────────────────────────────► datamodel-code-generator
 ```
 
-The original OpenAPI schema deliberately remains the Pydantic backend's input. Translation can
-lose JSON Schema details, while `datamodel-code-generator` already handles those details well.
-Operations, HTTP bindings, requiredness, constraints, documentation, pagination and SDK
-customizations reach the Python frontend only through the assembled Smithy model.
+For native input, the official `smithy-jsonschema` library converts only the generated response
+shape closures. It preserves standard Smithy requiredness, constraints, documentation, defaults,
+enums, collections, unions and references without making Spitzeisen maintain those mappings.
+`datamodel-code-generator` then produces the same Pydantic base classes used by OpenAPI projects.
+
+The original OpenAPI schema deliberately remains the Pydantic backend's input. Translation can lose
+JSON Schema details, while `datamodel-code-generator` already handles those details well. Operations,
+HTTP bindings, requiredness, constraints, documentation, pagination and SDK customizations still
+reach the Python frontend only through the assembled Smithy model.
 
 There is no parallel Spitzeisen policy document. A local Smithy overlay uses standard traits and
 Spitzeisen's small custom trait vocabulary to add information a mechanical OpenAPI import cannot
@@ -41,7 +50,11 @@ Package name, aggregate client class and output directory remain command-line bu
 they describe a Python artifact rather than the service. Base URLs, credentials, strict input mode
 and unknown-response-member handling remain runtime policy.
 
-## OpenAPI importer and Smithy assembly
+## Model inputs and Smithy assembly
+
+`spitzeisen-gen generate --smithy model/service.smithy` is the direct path. `--smithy` may be
+repeated and may be combined with repeatable `--overlay` sources. Native input never invokes an
+OpenAPI converter.
 
 `codegen/openapi.py` launches the pinned Maven artifact
 `com.disneystreaming.smithy:smithytranslate-cli_2.13:0.7.8`. The converter's OpenAPI 3.1 path emits
@@ -49,19 +62,24 @@ unsupported placeholders for ordinary scalar schemas, so Spitzeisen projects the
 subset into 3.0.3 first. Nullable scalar unions, `const`, and numeric exclusive bounds have explicit
 mappings. Genuinely 3.1-only JSON Schema features fail with their document path.
 
-`codegen/assembly.py` then launches the official Smithy CLI pinned to 1.72.0, matching the Smithy
-libraries used by the converter. It assembles:
+`codegen/assembly.py` launches the official Smithy CLI pinned to 1.72.0. It assembles:
 
-- the converted JSON AST;
+- native sources or the converted JSON AST;
 - Spitzeisen's custom trait definitions;
 - every repeatable `--overlay` input.
 
 Both tools are launched through Coursier when available and can be replaced with explicit commands
-through `SPITZEISEN_SMITHYTRANSLATE` and `SPITZEISEN_SMITHY`. Java and Coursier are pinned in this
-repository's `mise.toml`.
+through `SPITZEISEN_SMITHYTRANSLATE` and `SPITZEISEN_SMITHY`. The JSON Schema bridge can likewise be
+replaced through `SPITZEISEN_SMITHY_JSONSCHEMA`. Java and Coursier are pinned in this repository's
+`mise.toml`.
 
 `spitzeisen-gen import-openapi` writes the fully assembled model consumed by the frontend. Normal
 `generate` and `check` commands perform the same conversion and assembly in temporary directories.
+
+For native model generation, `codegen/smithy_jsonschema.py` invokes the official
+`software.amazon.smithy:smithy-jsonschema:1.72.0` artifact through a minimal packaged Java source
+launcher. Coursier supplies its classpath. The launcher scopes conversion to response shapes selected
+by `ClientPlan`; it does not implement schema semantics itself.
 
 ## Traits
 
@@ -111,14 +129,17 @@ non-GET operations and request bodies currently fail with explicit errors.
 ## Files and responsibilities
 
 `codegen/inputs.py`
-: Loads OpenAPI, converts and assembles Smithy, parses the completed model and returns one successful
-  `BuildInputs` value.
+: Selects native Smithy or OpenAPI, assembles the completed model and returns one successful
+  `BuildInputs` value with the appropriate Pydantic backend document.
 
 `codegen/openapi.py`
 : Owns the bounded OpenAPI compatibility projection and community converter launch.
 
 `codegen/assembly.py` and `codegen/smithy/spitzeisen.smithy`
 : Own official model assembly and the custom trait contract.
+
+`codegen/smithy_jsonschema.py` and `codegen/smithy/SmithyJsonSchema.java`
+: Launch Smithy's official JSON Schema converter for native response-model generation.
 
 `codegen/parser/smithy.py`, `codegen/traits.py`, and `codegen/ir.py`
 : Parse standard Smithy semantics, parse custom traits, and represent the protocol-neutral type tree.

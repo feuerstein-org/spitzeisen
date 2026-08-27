@@ -40,9 +40,9 @@ def test_assembly_invokes_pinned_cli_with_all_sources(
     assert captured[-2:] == [str(first.resolve()), str(second.resolve())]
 
 
-def test_assembly_rejects_missing_overlay(tmp_path: Path) -> None:
-    """A misspelled overlay path fails before launching Java."""
-    with pytest.raises(CodegenError, match="overlay files do not exist"):
+def test_assembly_rejects_missing_source(tmp_path: Path) -> None:
+    """A misspelled Smithy path fails before launching Java."""
+    with pytest.raises(CodegenError, match="Smithy source files do not exist"):
         assemble_smithy({"smithy": "2.0", "shapes": {}}, (tmp_path / "missing.smithy",))
 
 

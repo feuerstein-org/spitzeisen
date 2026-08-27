@@ -63,6 +63,11 @@ def _shape_name(shape_id: str) -> str:
     return shape_id.rsplit("#", maxsplit=1)[-1]
 
 
+def _empty_renames() -> dict[str, str]:
+    """Create a typed service rename map for dataclass defaults."""
+    return {}
+
+
 def _traits(value: object) -> dict[str, Any]:
     """Read a JSON AST traits object without spreading casts through the parser."""
     if not isinstance(value, dict):
@@ -433,6 +438,7 @@ class ParsedService:
     shape_id: str
     name: str
     operation_ids: tuple[str, ...]
+    renames: dict[str, str] = field(default_factory=_empty_renames)
     documentation: str = ""
     documentation_url: str | None = None
 
@@ -515,6 +521,14 @@ class ParsedSmithy:
                     else ()
                 )
                 traits = _traits(shape)
+                raw_renames = shape.get("rename", {})
+                rename_items = cast("dict[object, object]", raw_renames) if isinstance(raw_renames, dict) else {}
+                if not isinstance(raw_renames, dict) or not all(
+                    isinstance(source, str) and isinstance(target, str) for source, target in rename_items.items()
+                ):
+                    message = f"service {shape_id} contains an invalid rename mapping"
+                    raise TypeError(message)
+                renames = cast("dict[str, str]", raw_renames)
                 raw_external_docs = traits.get("smithy.api#externalDocumentation", {})
                 external_docs = (
                     cast("dict[str, object]", raw_external_docs) if isinstance(raw_external_docs, dict) else {}
@@ -525,6 +539,7 @@ class ParsedSmithy:
                         shape_id=shape_id,
                         name=_shape_name(shape_id),
                         operation_ids=operation_ids,
+                        renames=renames,
                         documentation=str(traits.get(_DOCUMENTATION, "")),
                         documentation_url=str(documentation_url) if documentation_url is not None else None,
                     ),

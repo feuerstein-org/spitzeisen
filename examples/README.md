@@ -9,6 +9,7 @@ into OpenAPI 3.1 because the source page itself is HTML.
 ```text
 spec/vendor.json                 OpenAPI transcription of the official request and response
 spec/weather.smithy              reviewed Smithy trait overlay
+spec/native-weather.smithy       standalone Smithy-first model used by the native codegen spike
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
 weather_sdk/models/current_weather.py create-once public model with a custom validator

@@ -1,11 +1,14 @@
 """The reproducible code-generation command and its user-facing failures."""
 
+import importlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-from smithy_fixtures import smithy_model
+from pydantic import ValidationError
+from smithy_fixtures import native_weather_model, smithy_model
 from typer.testing import CliRunner
 
 from spitzeisen.codegen.cli import main
@@ -145,6 +148,82 @@ def test_import_command_writes_an_inspectable_smithy_json_ast(tmp_path: Path) ->
     assert json.loads(output.read_text())["smithy"] == "2.0"
 
 
+def test_cli_generates_pydantic_models_from_native_smithy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The intended Smithy-first path generates models and operation code together."""
+    source = tmp_path / "weather.smithy"
+    source.write_text('$version: "2"\nnamespace native.weather\n')
+    package_root = tmp_path / "native_weather_sdk"
+    model = native_weather_model()
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+            "Weather": {
+                "type": "object",
+                "required": ["temperature"],
+                "properties": {
+                    "temperature": {
+                        "type": "number",
+                        "minimum": -100,
+                        "maximum": 100,
+                        "description": "Air temperature in degrees Celsius.",
+                    },
+                    "summary": {"type": "string", "minLength": 1, "maxLength": 200},
+                },
+            },
+        },
+    }
+
+    def assemble(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        return model
+
+    def convert_schema(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        return schema
+
+    monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
+    monkeypatch.setattr("spitzeisen.codegen.inputs.smithy_to_json_schema", convert_schema)
+    arguments = [
+        "--smithy",
+        str(source),
+        "--package",
+        "native_weather_sdk",
+        "--client-name",
+        "NativeWeatherApi",
+        "--output-path",
+        str(package_root),
+    ]
+    runner = CliRunner()
+
+    generated = runner.invoke(main, ["generate", *arguments])
+    checked = runner.invoke(main, ["check", *arguments])
+
+    assert generated.exit_code == 0, generated.output
+    assert checked.exit_code == 0, checked.output
+    model_source = (package_root / "models" / "_generated.py").read_text()
+    operation_source = (package_root / "_async" / "_generated" / "weather.py").read_text()
+    assert "from the assembled Smithy model" in model_source
+    assert "temperature: Annotated[float, Field(ge=-100.0, le=100.0)]" in model_source
+    assert "summary: Annotated[str | None, Field(max_length=200, min_length=1)] = None" in model_source
+    assert "city: str" in operation_source
+    assert "return Weather.model_validate(raw)" in operation_source
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        generated_models = importlib.import_module("native_weather_sdk.models")
+        weather = generated_models.Weather.model_validate({"temperature": 20, "futureField": True})
+        assert weather.temperature == 20
+        assert not hasattr(weather, "futureField")
+        with pytest.raises(ValidationError):
+            generated_models.Weather.model_validate({"temperature": 101})
+    finally:
+        sys.path.remove(str(tmp_path))
+        for module_name in tuple(sys.modules):
+            if module_name == "native_weather_sdk" or module_name.startswith("native_weather_sdk."):
+                del sys.modules[module_name]
+
+
 def test_check_catches_modified_and_orphaned_generated_modules(tmp_path: Path) -> None:
     """CI checks both byte drift and files left behind after an operation is removed."""
     openapi, overlay, package_root = project(tmp_path)
@@ -227,3 +306,24 @@ def test_cli_reports_source_selection_as_a_usage_error(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "provide either --url or --path, not both" in result.output
+
+    native_result = CliRunner().invoke(
+        main,
+        [
+            "generate",
+            "--path",
+            str(openapi),
+            "--smithy",
+            str(overlay),
+            "--package",
+            "example_sdk",
+            "--client-name",
+            "ExampleApi",
+            "--output-path",
+            str(package_root),
+        ],
+    )
+
+    assert native_result.exit_code == 2
+    assert "provide native --smithy sources" in native_result.output
+    assert "OpenAPI --url/--path, not both" in native_result.output
