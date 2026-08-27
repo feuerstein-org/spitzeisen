@@ -1,47 +1,14 @@
-"""Parser error structures adopted from openapi-python-client."""
+"""Small structured diagnostics shared by import and Smithy parsing."""
 
 from dataclasses import dataclass
-from enum import Enum
 
-from pydantic import BaseModel
-
-__all__ = ["ErrorLevel", "GeneratorError", "ParamError", "ParseError", "PropertyError"]
+__all__ = ["ParseError"]
 
 
-class ErrorLevel(Enum):
-    """The level of an error."""
-
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-
-
-@dataclass
-class GeneratorError:
-    """Information about an error which occurred during generation."""
+@dataclass(frozen=True, slots=True)
+class ParseError:
+    """One non-fatal importer or Smithy frontend diagnostic."""
 
     detail: str | None = None
-    level: ErrorLevel = ErrorLevel.ERROR
-    header: str = "Unable to generate the client"
-
-
-@dataclass
-class ParseError(GeneratorError):
-    """An error encountered while parsing part of an OpenAPI document."""
-
-    level: ErrorLevel = ErrorLevel.WARNING
-    data: BaseModel | None = None
-    header: str = "Unable to parse this part of your OpenAPI document: "
-
-
-@dataclass
-class PropertyError(ParseError):
-    """An error encountered while creating a schema property."""
-
-    header = "Problem creating a Property: "
-
-
-@dataclass
-class ParamError(ParseError):
-    """An error encountered while creating a param."""
-
-    header = "Problem creating a Param: "
+    header: str = "Unable to parse part of the Smithy model"
+    data: object | None = None

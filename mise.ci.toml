@@ -4,6 +4,8 @@
 [tools]
 python = "3.14"
 uv = "latest"
+java = "temurin-17"
+coursier = "2.1.24"
 
 [tasks.install-ci]
 description = "Install dependencies for CI"
@@ -22,7 +24,7 @@ run = "uv run python build_sync.py --check"
 
 [tasks.check-codegen-ci]
 description = "Fail if the generated example SDK is stale (CI only)"
-run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --manifest examples/spec/manifest.yaml --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.pre-commit-ci]
 description = "Run pre-commit hooks (CI only)"

@@ -57,7 +57,7 @@ def formatted_module(path: Path, source: str, *, create_once: bool = False) -> G
 
 
 def prune_spec(spec: dict[str, Any], client: ClientPlan) -> dict[str, Any]:
-    """Narrow a vendor document to the paths a manifest actually implements."""
+    """Narrow a vendor document to the operations in the compiled Smithy service closure."""
     wanted = {operation.path for operation in client.operations if operation.generate_model}
     return {
         **spec,

@@ -1,7 +1,7 @@
 """
 Authentication strategies.
 
-A few default strategies which are most common are provided and can be configured via the manifest.
+A few common default strategies are provided and configured at runtime.
 You can create your own AuthStrategy by implementing the AuthStrategy Protocol.
 """
 

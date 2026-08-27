@@ -1,5 +1,5 @@
-"""Turn the vendored OpenAPI Pydantic models into parsed OpenAPI data."""
+"""Turn a Smithy JSON AST into parsed service-model data."""
 
-from .openapi import OperationCollection, ParsedOpenAPI, ParsedOperation
+from .smithy import ParsedOperation, ParsedService, ParsedSmithy
 
-__all__ = ["OperationCollection", "ParsedOpenAPI", "ParsedOperation"]
+__all__ = ["ParsedOperation", "ParsedService", "ParsedSmithy"]

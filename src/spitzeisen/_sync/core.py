@@ -48,6 +48,12 @@ def _list_adapter(model: type[BaseModel]) -> TypeAdapter[list[Any]]:
     return TypeAdapter(list[model])  # type: ignore[valid-type]
 
 
+@functools.cache
+def _input_adapter(annotation: Any) -> TypeAdapter[Any]:
+    """Build and cache the adapter used by opt-in strict input validation."""
+    return TypeAdapter(annotation)
+
+
 def _is_retryable(status: int) -> bool:
     """Whether an HTTP status is worth another attempt: rate limiting or a transient fault."""
     return status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR_MIN
@@ -240,6 +246,12 @@ class SyncSpitzeisenApi:
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""
         return override if override is not None else self.config.on_validation_error
+
+    def _validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
+        """Apply opt-in strict validation to one generated keyword argument."""
+        if not self.config.strict_inputs:
+            return value
+        return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
 
     def _validate_records[ModelT: BaseModel](
         self,

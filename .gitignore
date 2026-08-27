@@ -6,6 +6,7 @@
 .vscode
 .DS_Store
 coverage.xml
+examples/spec/generated/
 
 __pycache__/
 *.py[cod]

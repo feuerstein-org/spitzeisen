@@ -132,7 +132,7 @@ def serialize_query_param(
     param_name: str | None = None,
 ) -> QueryParams:
     """
-    Serialize one OpenAPI query param into the exact key/value pairs it requires as defined in spec or manifest.
+    Serialize one Smithy-bound query member into the exact key/value pairs required by its protocol traits.
 
     Both, arrays and mappings are supported, if a required param is None, ValueError is raised.
 

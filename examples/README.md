@@ -8,7 +8,7 @@ into OpenAPI 3.1 because the source page itself is HTML.
 
 ```text
 spec/vendor.json                 OpenAPI transcription of the official request and response
-spec/manifest.yaml               SDK semantics OpenAPI cannot express
+spec/weather.smithy              reviewed Smithy trait overlay
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
 weather_sdk/models/current_weather.py create-once public model with a custom validator
@@ -27,9 +27,12 @@ mise run check-codegen
 mise run demo-example
 ```
 
-`codegen` hydrates the vendor input into the vendored OpenAPI model, compiles operation policy,
-generates models, and writes both operation surfaces in one transaction. No intermediate is kept as
-a second source of truth.
+`codegen` projects the compatible OpenAPI 3.1 document to 3.0, imports it with pinned
+`smithy-translate`, assembles `weather.smithy` with the converted model using the official Smithy
+CLI, parses the Smithy JSON AST, generates Pydantic models from the original schema, and writes both
+operation surfaces in one transaction. No intermediate is kept as a second source of truth. Run
+`mise run import-openapi` to write that intermediate under `spec/generated/` when it is useful to
+inspect.
 
 Files named or nested under `_generated` are replaced on every run. Public model, operation, and
 client modules are created only when absent, so adding custom SDK behaviour there is safe.
@@ -38,15 +41,16 @@ to contain at least one weather condition. The check task verifies generated mod
 operation/client bases, public exports, and the presence of every public extension module.
 
 Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
-remain wire-only, and no repeated `model_config` block is emitted into each class.
+remain wire-only, and unknown response members are ignored for forward compatibility.
 Every type in the public response graph is re-exported through `weather_sdk.models`, so callers can
 write annotations such as `from weather_sdk.models import Wind` without importing private storage.
 Root response names resolve to their user-owned subclasses; nested schema names resolve to the
 exact generated classes used inside those responses.
 
 The operation requires `lat`, `lon`, and the `appid` security credential, and optionally accepts
-`units`, `lang`, or a non-JSON `mode`. The manifest exposes the coordinates as `latitude` and
-`longitude`, renames `lang` to `language`, and excludes `mode` because Spitzeisen consumes JSON.
-The OpenAPI security scheme keeps `appid` out of the method while `QueryParamAuth` supplies it at
-runtime. This is the same division a production SDK would use: OpenAPI describes the wire and schema
-assumptions, the manifest shapes the Python API, and runtime config owns credentials.
+`units`, `lang`, or a non-JSON `mode`. Standard and Spitzeisen traits in `weather.smithy` expose the
+coordinates as `latitude` and `longitude`, rename `lang` to `language`, default `units`, and exclude
+`mode` because Spitzeisen consumes JSON. The imported Smithy auth trait keeps `appid` out of the
+method while `QueryParamAuth` supplies it at runtime. This is the same division a production SDK
+would use: the assembled Smithy model describes both wire bindings and SDK presentation, while
+runtime config owns credentials.

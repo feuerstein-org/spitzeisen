@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "An async/sync client framework to generate SDKs for REST APIs"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.12"
 authors = [{ name = "dodofarm", email = "ea01052002@gmail.com" }]
 keywords = ["api", "client", "rest", "rate-limiting", "openapi", "async"]
@@ -60,7 +60,7 @@ requires = ["uv_build>=0.8.5,<0.9.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-source-include = ["docs/**"]
+source-include = ["docs/**", "src/spitzeisen/codegen/smithy/*.smithy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -82,8 +82,7 @@ exclude_lines = [
 line-length = 120
 target-version = "py312"
 extend-exclude = [
-    "src/spitzeisen/codegen/schema",
-    "tests/test_openapi_schema",
+    "smithy-spike",
 ]
 lint.select = ["ALL"]
 lint.ignore = [
@@ -135,10 +134,6 @@ lint.unfixable = []
     "B008",    # Typer declares options in command function defaults
     "FBT003",  # Typer's Option API takes boolean defaults positionally
 ]
-"src/spitzeisen/codegen/parser/openapi.py" = [
-    "C901",    # Kept structurally aligned with upstream parser entry points
-    "SIM105",  # The explicit try/except mirrors upstream path-param sorting
-]
 "examples/*" = [
     "INP001",   # Require packages to have a __init__.py file
     "T201",     # Disallow print
@@ -152,10 +147,11 @@ max-args = 11   # Max arguments for functions - default 5
 [tool.pyright]
 pythonVersion = "3.12"
 pythonPlatform = "Linux"
+include = ["src", "tests", "examples", "build_sync.py"]
 extraPaths = ["examples"]
+exclude = ["smithy-spike"]
 ignore = [
-    "src/spitzeisen/codegen/schema",
-    "tests/test_openapi_schema",
+    "smithy-spike/generated",
 ]
 venvPath = "."
 venv = ".venv"

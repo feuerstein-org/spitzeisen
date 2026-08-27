@@ -1,8 +1,8 @@
 """
 The operation descriptor.
 
-`SpitzeisenOperationSpec` is the runtime half of the manifest: details an OpenAPI
-operation does not have (e.g. how much an API call costs in rate-limit tokens).
+`SpitzeisenOperationSpec` is the runtime half of the reviewed SDK overlay: details a
+mechanical service import does not infer (e.g. how much a call costs in rate-limit tokens).
 Generated operation modules declare one of these per operation, and the core reads it
 without needing to know anything else about the vendor API.
 """

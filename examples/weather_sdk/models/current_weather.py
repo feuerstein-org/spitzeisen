@@ -5,8 +5,6 @@ Created once by spitzeisen-gen. Add model-specific validators and behaviour here
 preserves this file and refreshes only the schema-derived base in `models._generated`.
 """
 
-from typing import Literal
-
 from pydantic import field_validator
 
 from weather_sdk.models._generated import (
@@ -26,6 +24,3 @@ class CurrentWeatherResponse(GeneratedCurrentWeatherResponse):
             msg = "current weather must contain at least one weather condition"
             raise ValueError(msg)
         return conditions
-
-
-Test = Literal["one", "two", "three"]

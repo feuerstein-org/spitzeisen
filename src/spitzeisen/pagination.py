@@ -4,7 +4,7 @@ Pagination strategies.
 A strategy answers three questions about a decoded page: which records it carries (`records`), how
 to get the first page (`first_params`) and how to get the following pages (`next_params`).
 
-A few default strategies which are most common are provided and can be configured via the manifest.
+A few common default strategies are provided and can be selected with Smithy traits.
 You can create your own by implementing the PaginationStrategy Protocol.
 """
 

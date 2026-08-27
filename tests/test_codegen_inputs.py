@@ -1,41 +1,33 @@
-"""Code-generation input loading and the upstream-shaped OpenAPI parser workflow."""
+"""OpenAPI import, Smithy parsing, and external-input orchestration."""
 
-from typing import Any
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
-from pydantic import ValidationError
+from smithy_fixtures import smithy_model
 
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.inputs import load_mapping, parse_openapi
-from spitzeisen.codegen.ir import (
-    HTTPMethod,
-    LiteralType,
-    ParamLocationIR,
-    PrimitiveKind,
-    PrimitiveType,
-    ReferenceType,
-    UnionType,
-)
-from spitzeisen.codegen.manifest import Manifest
-from spitzeisen.codegen.parser import ParsedOpenAPI
-from spitzeisen.codegen.policy import compile_manifest
+from spitzeisen.codegen.inputs import load_compile_inputs, load_mapping, parse_smithy
+from spitzeisen.codegen.ir import HTTPMethod, LiteralType, ParamLocationIR, PrimitiveKind, PrimitiveType
+from spitzeisen.codegen.openapi import project_openapi_for_converter
+from spitzeisen.codegen.policy import TargetSettings
+from spitzeisen.codegen.traits import PAGE_NUMBER_PAGINATION, SDK_OPERATION
 
 
 def openapi_document(*, version: str = "3.1.0", paths: dict[str, object] | None = None) -> dict[str, Any]:
-    """Build a small OpenAPI document accepted by the vendored Pydantic model."""
+    """Build a small vendor document."""
     return {
         "openapi": version,
-        "info": {"title": "Parser fixture", "version": "1.0.0"},
+        "info": {"title": "Fixture", "version": "1.0.0"},
         "paths": paths or {},
     }
 
 
-def parsed(spec: dict[str, Any]) -> ParsedOpenAPI:
-    """Parse a fixture and assert that hydration succeeded."""
-    return ParsedOpenAPI.from_dict(spec)
-
-
-def test_yaml_and_json_loading_match_upstream_content_type_rules() -> None:
+def test_yaml_and_json_loading() -> None:
     """Exact JSON content types select JSON; every other source is parsed as YAML."""
     as_json = load_mapping(b'{"openapi": "3.1.0"}', "application/json")
     as_yaml = load_mapping(b"openapi: 3.1.0\n", "application/yaml")
@@ -44,207 +36,161 @@ def test_yaml_and_json_loading_match_upstream_content_type_rules() -> None:
     assert as_yaml == {"openapi": "3.1.0"}
 
 
-def test_document_loading_raises_for_invalid_or_non_mapping_input() -> None:
-    """Fatal source failures use exceptions and reject unusable top-level values early."""
+def test_document_loading_rejects_invalid_or_non_mapping_input() -> None:
+    """Malformed external documents receive concise input errors."""
     with pytest.raises(CodegenError, match="Expecting property name"):
         load_mapping(b"{", "application/json")
     with pytest.raises(CodegenError, match="mapping at its top level"):
         load_mapping(b"[]", "application/json")
 
 
-def test_pydantic_hydration_is_the_only_document_validation_layer() -> None:
-    """The parser raises Pydantic errors and the input layer adds CLI-facing context."""
-    invalid = openapi_document(version="3.2.0")
-    with pytest.raises(ValidationError, match=r"Only OpenAPI versions 3\.1\.\* are supported"):
-        ParsedOpenAPI.from_dict(invalid)
-    with pytest.raises(CodegenError, match=r"Only OpenAPI versions 3\.1\.\* are supported") as raised:
-        parse_openapi(invalid)
-
-    permissive = parsed(
-        openapi_document(
-            paths={
-                "/things/{thing_id}": {
-                    "get": {
-                        "parameters": [
-                            {"name": "thing_id", "in": "path", "required": False, "schema": {"type": "string"}},
-                        ],
-                        "responses": {"200": {"description": "OK"}},
-                    },
-                },
-            },
-        ),
-    )
-
-    assert raised.value.header == "Failed to parse OpenAPI document"
-    assert isinstance(raised.value.__cause__, ValidationError)
-    assert permissive.operations[0].path_params[0].required is False
-
-
-def test_input_layer_adds_the_swagger_hint_without_discarding_the_validation_error() -> None:
-    """Swagger guidance is presentation policy layered over the original Pydantic failure."""
-    with pytest.raises(CodegenError) as raised:
-        parse_openapi({"swagger": "2.0", "info": {"title": "Old API", "version": "1.0"}, "paths": {}})
-
-    assert "You may be trying to use a Swagger document" in (raised.value.detail or "")
-    assert isinstance(raised.value.__cause__, ValidationError)
-
-
-def test_local_param_references_are_built_before_operations() -> None:
-    """Reusable params are resolved through the component registry."""
-    spec = {
-        **openapi_document(
-            paths={
-                "/accounts/{account_id}": {
-                    "get": {
-                        "parameters": [{"$ref": "#/components/parameters/AccountId"}],
-                        "responses": {"200": {"description": "OK"}},
-                    },
-                },
-            },
-        ),
-        "components": {
-            "parameters": {
-                "AccountId": {
-                    "name": "account_id",
-                    "in": "path",
-                    "required": True,
-                    "schema": {"type": "integer"},
-                },
-            },
-        },
-    }
-
-    operation = parsed(spec).operations[0]
-
-    assert operation.params[0].wire_name == "account_id"
-    assert operation.params[0].location is ParamLocationIR.PATH
-    assert operation.params[0].schema == PrimitiveType(PrimitiveKind.INTEGER)
-
-
-def test_remote_param_references_become_operation_warnings() -> None:
-    """Unsupported references omit that operation, as they do upstream."""
+def test_smithy_http_bindings_constraints_and_documentation_are_parsed() -> None:
+    """The generator frontend consumes Smithy traits rather than OpenAPI objects."""
     spec = openapi_document(
         paths={
-            "/things": {
+            "/places/{place_id}": {
                 "get": {
-                    "parameters": [{"$ref": "parameters.yaml#/Thing"}],
-                    "responses": {"200": {"description": "OK"}},
-                },
-            },
-        },
-    )
-
-    result = parsed(spec)
-    collection = result.operation_collections_by_tag["default"]
-
-    assert collection.operations == []
-    assert len(collection.parse_errors) == 1
-    assert "Remote references" in (collection.parse_errors[0].detail or "")
-
-
-def test_param_precedence_path_order_and_response_patterns_follow_upstream() -> None:
-    """Operation params win, path params are sorted, and responses use parser precedence."""
-    spec = openapi_document(
-        paths={
-            "/accounts/{account_id}/{record_id}": {
-                "parameters": [
-                    {"name": "record_id", "in": "path", "required": True, "schema": {"type": "integer"}},
-                    {"name": "region", "in": "query", "schema": {"type": "string"}},
-                    {"name": "account_id", "in": "path", "required": True, "schema": {"type": "string"}},
-                ],
-                "get": {
-                    "operationId": "readRecord",
+                    "operationId": "getPlace",
+                    "description": "Return one place.",
                     "parameters": [
-                        {"name": "region", "in": "query", "schema": {"enum": ["eu", "us"], "default": "eu"}},
+                        {
+                            "name": "place_id",
+                            "in": "path",
+                            "required": True,
+                            "description": "Place identifier.",
+                            "schema": {"type": "integer"},
+                        },
+                        {
+                            "name": "unit",
+                            "in": "query",
+                            "description": "Measurement unit.",
+                            "schema": {"type": "string", "enum": ["metric", "imperial"], "default": "metric"},
+                        },
+                        {
+                            "name": "X-Workspace",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                     ],
-                    "responses": {
-                        "default": {"description": "Fallback"},
-                        "2XX": {"description": "Any success"},
-                        "404": {"description": "Missing"},
-                        "200": {"description": "Found"},
-                    },
                 },
             },
         },
     )
 
-    operation = parsed(spec).operation_named("readRecord")
+    parsed = parse_smithy(smithy_model(spec))
+    operation = parsed.operation_named("getPlace")
 
     assert operation is not None
     assert operation.method is HTTPMethod.GET
-    assert [param.wire_name for param in operation.params] == ["account_id", "record_id", "region"]
-    assert operation.params[2].schema == LiteralType(("eu", "us"))
-    assert operation.params[2].default == "eu"
-    assert [response.status.raw for response in operation.responses] == ["200", "404", "2XX", "default"]
+    assert operation.path == "/places/{place_id}"
+    assert operation.summary == "Return one place."
+    assert [param.location for param in operation.params] == [
+        ParamLocationIR.PATH,
+        ParamLocationIR.QUERY,
+        ParamLocationIR.HEADER,
+    ]
+    assert operation.params[0].schema == PrimitiveType(PrimitiveKind.INTEGER)
+    assert operation.params[0].required
+    assert operation.params[0].description == "Place identifier."
+    assert operation.params[1].schema == LiteralType(("metric", "imperial"))
+    assert operation.params[1].has_default
+    assert operation.params[1].default == "metric"
 
 
-def test_operation_id_selection_still_checks_manifest_wire_drift() -> None:
-    """An operation ID selects an operation without concealing a path change."""
-    openapi = parsed(
-        openapi_document(
-            paths={
-                "/things": {
-                    "get": {
-                        "operationId": "listThings",
-                        "responses": {"200": {"description": "OK"}},
-                    },
-                },
-            },
-        ),
-    )
-    manifest_data: dict[str, Any] = {
-        "vendor": "example",
-        "base_url": "https://api.example.test",
-        "package": "example_sdk",
-        "client_name": "ExampleApi",
-        "operations": {
-            "things": {
-                "operation_id": "listThings",
-                "path": "/things",
-                "method_name": "get_things",
-                "model": "Thing",
+def test_smithy_parser_rejects_converter_placeholders() -> None:
+    """A partial conversion cannot silently generate stringly typed SDK methods."""
+    model = {
+        "smithy": "2.0",
+        "shapes": {
+            "vendor#Unsupported": {
+                "type": "structure",
+                "members": {},
+                "traits": {"smithytranslate#errorMessage": "Schema not supported"},
             },
         },
     }
 
-    client = compile_manifest(Manifest.model_validate(manifest_data), openapi)
-
-    assert client.operations[0].path == "/things"
-    manifest_data["operations"]["things"]["path"] = "/renamed"
-    with pytest.raises(ValueError, match="resolves to GET /things"):
-        compile_manifest(Manifest.model_validate(manifest_data), openapi)
+    with pytest.raises(CodegenError, match="unsupported Smithy placeholders"):
+        parse_smithy(model)
 
 
-def test_nullable_and_reference_schemas_remain_generator_neutral() -> None:
-    """The vendored model normalizes nullable before the small type IR is built."""
-    responses = {
-        "200": {
-            "description": "OK",
-            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}},
+def test_openapi_31_compatibility_projection_is_explicit_and_bounded() -> None:
+    """Simple nullable and const schemas project; genuinely 3.1-only schemas fail."""
+    spec = openapi_document()
+    spec["components"] = {
+        "schemas": {
+            "MaybeName": {"type": ["string", "null"]},
+            "OnlyOne": {"const": "one"},
         },
     }
-    v30 = {
-        **openapi_document(version="3.0.4", paths={"/things": {"get": {"responses": responses}}}),
-        "components": {"schemas": {"Thing": {"type": "string", "nullable": True}}},
-    }
-    response_type = parsed(v30).operations[0].responses[0].content[0].schema
 
-    assert isinstance(response_type, ReferenceType)
-    assert response_type.suggested_name == "Thing"
+    projected = project_openapi_for_converter(spec)
 
-    inline = openapi_document(
+    assert projected["openapi"] == "3.0.3"
+    assert projected["components"]["schemas"]["MaybeName"] == {"type": "string", "nullable": True}
+    assert projected["components"]["schemas"]["OnlyOne"] == {"enum": ["one"]}
+
+    components = cast("dict[str, Any]", spec["components"])
+    schemas = cast("dict[str, Any]", components["schemas"])
+    schemas["Modern"] = {"$defs": {"nested": {"type": "string"}}}
+    with pytest.raises(CodegenError, match=r"\$defs"):
+        project_openapi_for_converter(spec)
+
+
+def test_whole_input_pipeline_compiles_the_imported_smithy_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAPI is converted, parsed as Smithy, and combined with the reviewed SDK overlay."""
+    spec = openapi_document(
         paths={
             "/things": {
                 "get": {
+                    "operationId": "listThings",
                     "parameters": [
-                        {"name": "value", "in": "query", "schema": {"type": ["string", "null"]}},
+                        {"name": "limit", "in": "query", "schema": {"type": "integer", "maximum": 100}},
                     ],
-                    "responses": {"200": {"description": "OK"}},
                 },
             },
         },
     )
-    schema = parsed(inline).operations[0].params[0].schema
+    source = tmp_path / "openapi.json"
+    source.write_text(json.dumps(spec))
+    overlay = tmp_path / "example.smithy"
+    overlay.write_text('$version: "2"\nnamespace example.overlay\n')
 
-    assert schema == UnionType((PrimitiveType(PrimitiveKind.STRING), PrimitiveType(PrimitiveKind.NULL)))
-    assert all(word not in repr(schema) for word in ("Jinja", "Unset", "Import"))
+    def fake_converter(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output = Path(command[-1])
+        (output / "result.json").write_text(json.dumps(smithy_model(spec)))
+        return subprocess.CompletedProcess(command, 0, stdout=f"Writing {output / 'result.json'}\n", stderr="")
+
+    monkeypatch.setattr("spitzeisen.codegen.openapi._converter_command", lambda: ["smithytranslate"])
+    monkeypatch.setattr("spitzeisen.codegen.openapi.subprocess.run", fake_converter)
+
+    def fake_assembler(imported: dict[str, Any], overlays: tuple[Path, ...]) -> dict[str, Any]:
+        assert overlays == (overlay,)
+        operation = imported["shapes"]["example#ListThings"]
+        operation["traits"][SDK_OPERATION] = {
+            "name": "things",
+            "methodName": "list_things",
+            "responseModel": "Thing",
+            "shape": "collection",
+        }
+        operation["traits"][PAGE_NUMBER_PAGINATION] = {"pageSize": "limit"}
+        return imported
+
+    monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", fake_assembler)
+
+    inputs = load_compile_inputs(
+        source=source,
+        overlays=(overlay,),
+        target=TargetSettings(package="example_sdk", client_name="ExampleApi"),
+        timeout=5,
+    )
+
+    assert inputs.client.operations[0].method_name == "list_things"
+    assert inputs.client.operations[0].page_size is not None
+    assert inputs.client.operations[0].page_size.maximum == 100
+    assert inputs.smithy["smithy"] == "2.0"
+    assert not inputs.warnings

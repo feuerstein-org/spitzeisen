@@ -1,8 +1,7 @@
 """
-Protocol types retained after parsing the upstream OpenAPI models.
+Protocol types retained after parsing the imported Smithy model.
 
-The parser owns operations and their grouping, just as openapi-python-client does. This
-module only contains the small, generator-neutral type tree used by Spitzeisen policy.
+This module contains the small, generator-neutral type tree used by Spitzeisen policy.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ SUCCESS_MAXIMUM = 300
 
 
 class HTTPMethod(StrEnum):
-    """HTTP methods parsed by openapi-python-client's operation workflow."""
+    """HTTP methods accepted from Smithy's @http trait."""
 
     GET = "get"
     PUT = "put"
@@ -41,7 +40,7 @@ class ParamLocationIR(StrEnum):
 
 
 class PrimitiveKind(StrEnum):
-    """JSON Schema primitive types."""
+    """JSON-compatible primitive kinds used by generated Python annotations."""
 
     STRING = "string"
     INTEGER = "integer"
@@ -52,14 +51,14 @@ class PrimitiveKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SchemaId:
-    """The local JSON Pointer carried by an OpenAPI reference."""
+    """A stable source-model reference carried by the neutral IR."""
 
     reference: str
 
     @property
     def canonical_uri(self) -> str:
-        """Return the reference in its original local-document form."""
-        return f"#{self.reference}"
+        """Return the source reference unchanged."""
+        return self.reference
 
 
 @dataclass(frozen=True, slots=True)

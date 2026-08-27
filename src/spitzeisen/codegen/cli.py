@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
+from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.generate import (
     GeneratedModule,
@@ -26,10 +27,11 @@ from spitzeisen.codegen.generate import (
     model_exports_module,
     prune_spec,
 )
-from spitzeisen.codegen.inputs import load_compile_inputs
+from spitzeisen.codegen.inputs import load_compile_inputs, load_document
+from spitzeisen.codegen.openapi import import_openapi
+from spitzeisen.codegen.policy import TargetSettings
 
 if TYPE_CHECKING:
-    from spitzeisen.codegen.manifest import Manifest
     from spitzeisen.codegen.parser.errors import ParseError
     from spitzeisen.codegen.policy import ClientPlan
 
@@ -45,7 +47,11 @@ class Config:
     """Resolved command-line configuration."""
 
     source: str | Path
-    manifest_path: Path
+    overlays: tuple[Path, ...]
+    service: str | None
+    package: str
+    client_name: str
+    vendor: str | None
     output_path: Path
     file_encoding: str
     base_class: str
@@ -65,31 +71,38 @@ main = typer.Typer(name="spitzeisen-gen", no_args_is_help=True)
 
 @main.callback()
 def cli() -> None:
-    """Generate a polished Python SDK from an OpenAPI document."""
+    """Import OpenAPI through Smithy and generate a polished Python SDK."""
+
+
+def _select_source(url: str | None, path: Path | None) -> str | Path:
+    """Resolve mutually exclusive OpenAPI source options."""
+    if url and not path:
+        return url
+    if path and not url:
+        return path
+    if url and path:
+        message = "provide either --url or --path, not both"
+        raise typer.BadParameter(message, param_hint="--url / --path")
+    message = "provide either --url or --path"
+    raise typer.BadParameter(message, param_hint="--url / --path")
 
 
 def _process_config(
     *,
     url: str | None,
     path: Path | None,
-    manifest_path: Path,
+    overlays: list[Path] | None,
+    service: str | None,
+    package: str,
+    client_name: str,
+    vendor: str | None,
     output_path: Path,
     file_encoding: str,
     base_class: str,
     http_timeout: int,
 ) -> Config:
     """Validate command options and resolve the selected document source."""
-    source: str | Path
-    if url and not path:
-        source = url
-    elif path and not url:
-        source = path
-    elif url and path:
-        message = "provide either --url or --path, not both"
-        raise typer.BadParameter(message, param_hint="--url / --path")
-    else:
-        message = "provide either --url or --path"
-        raise typer.BadParameter(message, param_hint="--url / --path")
+    source = _select_source(url, path)
     try:
         codecs.getencoder(file_encoding)
     except LookupError as err:
@@ -97,7 +110,11 @@ def _process_config(
         raise typer.BadParameter(message, param_hint="--file-encoding") from err
     return Config(
         source=source,
-        manifest_path=manifest_path,
+        overlays=tuple(overlays or ()),
+        service=service,
+        package=package,
+        client_name=client_name,
+        vendor=vendor,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -161,11 +178,37 @@ def _handle_codegen_errors() -> Generator[None]:
         raise typer.Exit(code=1) from err
 
 
-@main.command()
-def generate(
+@main.command("import-openapi")
+def import_openapi_command(
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
-    manifest_path: Path = typer.Option(..., "--manifest", help="Path to the Spitzeisen manifest"),
+    output_path: Path = typer.Option(..., help="Destination for the Smithy 2.0 JSON AST"),
+    overlay: list[Path] | None = typer.Option(None, "--overlay", help="Smithy overlay file; may be repeated"),
+    http_timeout: int = typer.Option(DEFAULT_HTTP_TIMEOUT, min=1, help="OpenAPI URL timeout in seconds"),
+) -> None:
+    """Import OpenAPI into the pinned, inspectable Smithy JSON representation."""
+    source = _select_source(url, path)
+    with _handle_codegen_errors():
+        spec = load_document(source=source, timeout=http_timeout)
+        imported = import_openapi(spec, working_directory=output_path.parent)
+        model = assemble_smithy(imported.model, tuple(overlay or ()), working_directory=output_path.parent)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with _temporary_sibling(output_path, suffix=".json") as temporary:
+        temporary.write_text(json.dumps(model, indent=2) + "\n")
+        temporary.replace(output_path)
+    typer.echo(f"wrote Smithy JSON AST: {output_path}")
+    handle_warnings(imported.warnings)
+
+
+@main.command()
+def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parameter
+    url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
+    path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
+    overlay: list[Path] | None = typer.Option(None, "--overlay", help="Smithy overlay file; may be repeated"),
+    service: str | None = typer.Option(None, help="Smithy service shape ID; inferred when the model has one service"),
+    package: str = typer.Option(..., help="Importable Python package name"),
+    client_name: str = typer.Option(..., help="Generated aggregate client class name"),
+    vendor: str | None = typer.Option(None, help="Readable vendor name used in generated documentation"),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -176,7 +219,11 @@ def generate(
     config = _process_config(
         url=url,
         path=path,
-        manifest_path=manifest_path,
+        overlays=overlay,
+        service=service,
+        package=package,
+        client_name=client_name,
+        vendor=vendor,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -198,10 +245,14 @@ def generate(
 
 
 @main.command()
-def check(
+def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parameter
     url: str | None = typer.Option(None, help="A URL to read the OpenAPI document from"),
     path: Path | None = typer.Option(None, help="A path to the OpenAPI document"),
-    manifest_path: Path = typer.Option(..., "--manifest", help="Path to the Spitzeisen manifest"),
+    overlay: list[Path] | None = typer.Option(None, "--overlay", help="Smithy overlay file; may be repeated"),
+    service: str | None = typer.Option(None, help="Smithy service shape ID; inferred when the model has one service"),
+    package: str = typer.Option(..., help="Importable Python package name"),
+    client_name: str = typer.Option(..., help="Generated aggregate client class name"),
+    vendor: str | None = typer.Option(None, help="Readable vendor name used in generated documentation"),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -212,7 +263,11 @@ def check(
     config = _process_config(
         url=url,
         path=path,
-        manifest_path=manifest_path,
+        overlays=overlay,
+        service=service,
+        package=package,
+        client_name=client_name,
+        vendor=vendor,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -275,7 +330,13 @@ def _render(config: Config) -> RenderResult:
     """Compile all inputs and render the complete output tree."""
     inputs = load_compile_inputs(
         source=config.source,
-        manifest_path=config.manifest_path,
+        overlays=config.overlays,
+        target=TargetSettings(
+            package=config.package,
+            client_name=config.client_name,
+            service=config.service,
+            vendor=config.vendor,
+        ),
         timeout=config.http_timeout,
     )
     _validate_handwritten_models(inputs.client, config.output_path)
@@ -285,8 +346,7 @@ def _render(config: Config) -> RenderResult:
         try:
             model_source = _generate_model_source(
                 spec=inputs.spec,
-                working_directory=config.manifest_path.parent,
-                manifest=inputs.manifest,
+                working_directory=_working_directory(config),
                 client=inputs.client,
                 package_root=config.output_path,
                 base_class=config.base_class,
@@ -303,7 +363,7 @@ def _render(config: Config) -> RenderResult:
             raise CodegenError(
                 detail=(
                     f"the model backend did not generate response models {missing_models}; "
-                    "check response schema titles or set `generate_model: false`"
+                    "check response schema titles or set @sdkOperation(generateModel: false)"
                 ),
             )
         modules.append(GeneratedModule(config.output_path / "models" / "_generated.py", model_source))
@@ -329,7 +389,6 @@ def _generate_model_source(
     *,
     spec: dict[str, Any],
     working_directory: Path,
-    manifest: Manifest,
     client: ClientPlan,
     package_root: Path,
     base_class: str,
@@ -337,9 +396,9 @@ def _generate_model_source(
 ) -> str:
     """Run the replaceable Pydantic model backend and return reproducible source."""
     extra: list[str] = []
-    if aliases := manifest.model_aliases():
+    if aliases := client.model_aliases:
         extra += ["--aliases", json.dumps(aliases)]
-    if overrides := manifest.model_type_overrides():
+    if overrides := client.model_type_overrides:
         extra += ["--type-overrides", json.dumps(overrides)]
     with _temporary_sibling(working_directory / "openapi", suffix=".json") as model_input:
         model_input.write_text(json.dumps(prune_spec(spec, client), indent=2), encoding=encoding)
@@ -382,6 +441,15 @@ def _generate_model_source(
             source = normalize_model_header(output.read_text(encoding=encoding))
     destination = package_root / "models" / "_generated.py"
     return format_python(source, str(destination))
+
+
+def _working_directory(config: Config) -> Path:
+    """Choose a writable directory near local inputs for temporary model-backend files."""
+    if config.overlays:
+        return config.overlays[0].parent
+    if isinstance(config.source, Path):
+        return config.source.parent
+    return config.output_path.parent
 
 
 @contextmanager

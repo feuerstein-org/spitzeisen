@@ -132,7 +132,7 @@ def test_credentials_are_not_in_repr(strategy: object) -> None:
 
 
 def test_shape_errors_name_the_keys_that_did_arrive() -> None:
-    """The message has to be enough to fix the manifest without reading a packet capture."""
+    """The message has to be enough to fix the response mapping without a packet capture."""
     with pytest.raises(ResponseShapeError, match=r"got an object with keys \['data', 'status'\]"):
         extract_records({"status": "ok", "data": []}, "results")
 

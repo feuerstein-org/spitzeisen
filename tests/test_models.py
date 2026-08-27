@@ -12,8 +12,8 @@ class ExampleModel(SpitzeisenModel):
     value: int
 
 
-def test_spitzeisen_model_keeps_pydantics_default_extra_handling() -> None:
-    """The shared base currently ignores unknown fields like an unconfigured BaseModel."""
+def test_spitzeisen_model_explicitly_ignores_unknown_response_members() -> None:
+    """New Smithy output members remain forward-compatible while known fields are validated."""
     model = ExampleModel.model_validate({"value": 1, "unexpected": True})
 
     assert model == ExampleModel(value=1)

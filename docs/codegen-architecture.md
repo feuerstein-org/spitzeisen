@@ -1,143 +1,144 @@
 # Code-generation architecture
 
-Spitzeisen deliberately follows openapi-python-client until the point where the two projects need
-different generated SDKs:
+Spitzeisen consumes one assembled Smithy 2.0 model, even when a vendor publishes only OpenAPI:
 
 ```text
-explicit --path or --url             Spitzeisen manifest
-          │                                  │
-          ▼                                  │
-strict source loading                        │
-(httpx + ruamel.yaml)                        │
-          │                                  │
-          ▼                                  │
-vendored OpenAPI Pydantic model              │
-          │                                  │
-          ▼                                  │
-ParsedOpenAPI.from_dict()                    │
-components → operation collections           │
-          │                                  │
-          └──────────────┬───────────────────┘
-                         ▼
-                  typed ClientPlan
-                    ┌────┴────┐
-                    ▼         ▼
-              Jinja output  model backend
-                    └────┬────┘
-                         ▼
-                 async + sync SDK
+vendor OpenAPI ── compatibility projection ── smithy-translate 0.7.8
+      │                                         │
+      │                                         ▼
+      │                                  converted Smithy JSON
+      │                                         │
+      │             local .smithy overlays ─────┤
+      │                                         ▼
+      │                              official Smithy assembler
+      │                                         │
+      │                                  Smithy 2.0 JSON AST
+      │                                         │
+      │                                  ParsedSmithy frontend
+      │                                         ▼
+      │                                  typed ClientPlan
+      │                                    │          │
+      │                                    ▼          ▼
+      │                              Jinja clients  public seams
+      │
+      └──────────────────────────────► datamodel-code-generator
+                                             │
+                                             ▼
+                                      Pydantic models
 ```
 
-There is intentionally no separate OpenAPI validator, overlay processor, dialect abstraction,
-diagnostics graph, document-node graph, general `$ref` resolver, or manifest-only path. Pydantic
-hydration is the document-validation boundary. As in upstream, only local component references are
-supported by the parser.
+The original OpenAPI schema deliberately remains the Pydantic backend's input. Translation can
+lose JSON Schema details, while `datamodel-code-generator` already handles those details well.
+Operations, HTTP bindings, requiredness, constraints, documentation, pagination and SDK
+customizations reach the Python frontend only through the assembled Smithy model.
+
+There is no parallel Spitzeisen policy document. A local Smithy overlay uses standard traits and
+Spitzeisen's small custom trait vocabulary to add information a mechanical OpenAPI import cannot
+infer. Smithy's assembler validates the overlay, trait selectors and referenced shape IDs. A vendor
+rename therefore fails assembly instead of silently dropping an SDK customization.
+
+Package name, aggregate client class and output directory remain command-line build settings because
+they describe a Python artifact rather than the service. Base URLs, credentials, strict input mode
+and unknown-response-member handling remain runtime policy.
+
+## OpenAPI importer and Smithy assembly
+
+`codegen/openapi.py` launches the pinned Maven artifact
+`com.disneystreaming.smithy:smithytranslate-cli_2.13:0.7.8`. The converter's OpenAPI 3.1 path emits
+unsupported placeholders for ordinary scalar schemas, so Spitzeisen projects the compatible 3.1
+subset into 3.0.3 first. Nullable scalar unions, `const`, and numeric exclusive bounds have explicit
+mappings. Genuinely 3.1-only JSON Schema features fail with their document path.
+
+`codegen/assembly.py` then launches the official Smithy CLI pinned to 1.72.0, matching the Smithy
+libraries used by the converter. It assembles:
+
+- the converted JSON AST;
+- Spitzeisen's custom trait definitions;
+- every repeatable `--overlay` input.
+
+Both tools are launched through Coursier when available and can be replaced with explicit commands
+through `SPITZEISEN_SMITHYTRANSLATE` and `SPITZEISEN_SMITHY`. Java and Coursier are pinned in this
+repository's `mise.toml`.
+
+`spitzeisen-gen import-openapi` writes the fully assembled model consumed by the frontend. Normal
+`generate` and `check` commands perform the same conversion and assembly in temporary directories.
+
+## Traits
+
+Standard Smithy traits remain authoritative for `@http`, HTTP bindings, `@required`, `@default`,
+documentation, ranges, enums, authentication, errors and output payloads. Spitzeisen defines only
+the codegen-specific information that Smithy's prelude cannot express:
+
+`spitzeisen.api#sdkOperation`
+: Optional operation/module names, response override, handwritten-model switch, ambiguous response
+  cardinality, rate-limit cost, not-found behavior and top-level result path.
+
+`spitzeisen.api#pythonParameter`
+: Friendly Python name, generic HTTP query serialization, coercion, client-owned Literal or
+  function, annotation escape hatch and an SDK-only client default.
+
+`spitzeisen.api#hidden`
+: Omits an imported operation or input member from the generated Python surface.
+
+`spitzeisen.api#pageNumberPagination`
+: Describes page-number APIs that cannot use Smithy's cursor-oriented standard `@paginated` trait.
+
+`spitzeisen.api#sorting`
+: Describes separate or suffix-based vendor sorting controls.
+
+`spitzeisen.api#modelProperty`
+: Supplies the existing Pydantic backend's property aliases and type overrides.
+
+The definitions are shipped in `codegen/smithy/spitzeisen.smithy`. Overlays apply them externally,
+so converted files remain disposable and vendor updates are easy to review.
+
+## Smithy frontend
+
+`codegen/parser/smithy.py` reads the assembled JSON AST. It handles service membership, operation
+`@http` traits, query/header/label/payload bindings, required/default/documentation/range/enum/date
+semantics, input/output structures and error statuses. It lowers protocol facts into the small
+types in `codegen/ir.py`; nothing downstream receives converter objects.
+
+`codegen/traits.py` reads Spitzeisen's custom traits. `codegen/policy.py` selects the requested
+service closure, infers response models and cardinality where possible, and compiles everything into
+an immutable `ClientPlan` before rendering.
+
+Spitzeisen currently implements a constrained generic HTTP/JSON profile rather than claiming that
+arbitrary vendor APIs use AWS `restJson1`. Query collections use the profile default unless an
+overlay supplies explicit serialization. Cursor-based standard `@paginated`, nested result paths,
+non-GET operations and request bodies currently fail with explicit errors.
 
 ## Files and responsibilities
 
-`codegen/exceptions.py`
-: Defines the structured exception used for expected fatal failures in Spitzeisen-owned code. The
-  exception carries a short heading and optional detail; the CLI formats it once at its outer
-  boundary without hiding unexpected programming errors.
-
 `codegen/inputs.py`
-: Owns the complete external-input workflow. It loads JSON or YAML mappings, fetches or reads the
-  OpenAPI document, validates the manifest, parses `ParsedOpenAPI`, collects recoverable warnings,
-  and compiles both inputs into `BuildInputs`. HTTP failures, invalid top-level values, and validation
-  errors become `CodegenError` with their original exception preserved as the cause. The rest of the
-  CLI receives one successful value instead of coordinating each input phase.
+: Loads OpenAPI, converts and assembles Smithy, parses the completed model and returns one successful
+  `BuildInputs` value.
 
-`codegen/schema/`
-: An upstream-shaped snapshot of the complete Pydantic OpenAPI object model. `OpenAPI`,
-  `PathItem`, `Operation`, `Param`, `Response`, `RequestBody`, `Schema`, and `Reference` are the
-  objects the active parser consumes. Provenance and update rules are in
-  `vendored-openapi-schema.md`.
+`codegen/openapi.py`
+: Owns the bounded OpenAPI compatibility projection and community converter launch.
 
-`codegen/parser/errors.py`
-: Upstream's small `GeneratorError`/`ParseError` data structures, retained for parser compatibility.
-  Fatal document hydration now uses Pydantic's exception contract. Recoverable `ParseError` values
-  may omit an unsupported operation or response while allowing the rest of a client to be generated;
-  `--fail-on-warning` turns those warnings into a non-zero exit.
+`codegen/assembly.py` and `codegen/smithy/spitzeisen.smithy`
+: Own official model assembly and the custom trait contract.
 
-`codegen/parser/openapi.py`
-: The OpenAPI-to-parsed-data boundary. Its workflow mirrors upstream's
-  `ParsedOpenAPI.from_dict()`: hydrate `OpenAPI`, build component registries, traverse paths into
-  tag collections, parse operation params before Path Item params, sort path params,
-  resolve request/response component references, order response patterns, and collect warnings.
-
-  Its output is intentionally Spitzeisen-specific after that workflow. `ParsedOperation` retains the
-  protocol facts our policy needs instead of upstream's `attrs`, `Unset`, import, and response-union
-  objects. The manifest's separate `ManifestOperation` contains SDK policy; `OperationPlan` is the
-  merged renderer-ready result.
-
-`codegen/ir.py`
-: The small schema-type IR used inside parsed operations: primitives, literals, arrays, objects,
-  references, unions, intersections, media types, params, request bodies, and responses. It no
-  longer duplicates the complete document or operation hierarchy already represented by upstream's
-  Pydantic/parser architecture.
-
-`codegen/manifest.py`
-: Defines SDK policy OpenAPI cannot express: public method/model names, scalar rate-limit cost,
-  pagination strategy, not-found behavior, page-size and sorting controls, public param names,
-  client defaults, and vendor-specific coercion hooks. `required` remains the API/wire
-  requirement; `client_default` only changes whether the generated caller must supply a value.
-  OpenAPI remains authoritative for operations and params.
+`codegen/parser/smithy.py`, `codegen/traits.py`, and `codegen/ir.py`
+: Parse standard Smithy semantics, parse custom traits, and represent the protocol-neutral type tree.
 
 `codegen/policy.py`
-: Joins `ParsedOpenAPI` and `Manifest` into an immutable `ClientPlan`. It selects parsed operations,
-  detects manifest/spec drift, derives Python arguments, checks runtime serializer support, and
-  computes imports and helper calls. This is the first layer that intentionally diverges from
-  openapi-python-client's generated architecture.
+: Compiles a selected Smithy service into the renderer-ready plan.
 
-`codegen/generate.py`
-: Renders a `ClientPlan`. It owns the Jinja environment, formatting, output paths,
-  public/generated class split, and model export discovery. Templates receive plans, never raw
-  OpenAPI mappings or Pydantic objects.
+`codegen/generate.py` and `codegen/templates/`
+: Render regenerated async/sync bases and create-once public extension modules.
 
 `codegen/cli.py`
-: A Typer interface modeled after upstream. Both `generate` and Spitzeisen's additional `check`
-  command require exactly one of `--path`/`--url`, a `--manifest`, and an `--output-path`.
-  Generation runs the model backend, renders both surfaces, atomically replaces generated files,
-  preserves public extension modules, and removes obsolete files only from generated directories.
+: Coordinates transactional generation, inspectable imports, atomic writes, drift checks, pruning
+  and the replaceable Pydantic backend.
 
-`codegen/templates/operation.py.jinja` and `operation_single.py.jinja`
-: Render collection and single-object operation bases once for async and once for sync.
+## Validation policy
 
-`codegen/templates/operation_public.py.jinja`
-: Scaffolds the public operation subclass once. SDK authors own this file after creation.
+Generated response models inherit `SpitzeisenModel`. Declared fields and constraints are validated
+by Pydantic, while unknown output members are ignored deliberately for Smithy-style forward
+compatibility.
 
-`codegen/templates/client.py.jinja` and `client_public.py.jinja`
-: Render aggregate client wiring and its create-once public subclass.
-
-`codegen/templates/model_public.py.jinja` and `model_exports.py.jinja`
-: Scaffold response-model subclasses and maintain stable public model imports.
-
-## Why the IR diverges
-
-openapi-python-client's post-parse property objects encode its generated package: `attrs` models,
-`Unset`, import objects, per-operation `.sync`/`.async` functions, and broad response unions.
-Spitzeisen instead generates conventional typed API classes, paired async/sync surfaces, Pydantic
-response validation, and manifest-driven rate-limit cost and pagination. Reusing upstream's final IR
-would import the exact API design this project is intended to replace.
-
-The maintained boundary is therefore narrow and explicit:
-
-1. Copy upstream source loading and Pydantic hydration.
-2. Mirror its component/operation parsing workflow and local-reference behavior.
-3. Lower into Spitzeisen's small protocol representation.
-4. Apply Spitzeisen policy and render its public SDK design.
-
-## Model backend
-
-Schema model emission remains delegated to `datamodel-code-generator`. It receives the raw loaded
-document pruned to manifest-selected paths, plus manifest aliases and type overrides. The parser IR
-is authoritative for operation signatures and wire behavior; the mature backend handles the wider
-JSON Schema vocabulary needed by response models.
-
-## Extending code generation
-
-When adding a protocol feature, preserve upstream's parsing order and error behavior where
-possible. Extend the typed operation/IR representation only for facts Spitzeisen policy needs, then
-add policy, runtime support, and rendering. For example, non-GET operations and request bodies are
-already parsed; generation rejects them plainly until the runtime and templates can represent them
-faithfully.
+Generated operations retain ergonomic keyword arguments. `strict_inputs=False` is permissive;
+setting it to `True` validates every generated argument with Pydantic strict mode before
+serialization.

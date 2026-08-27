@@ -1,4 +1,4 @@
-"""Load, validate, and compile the external inputs used for code generation."""
+"""Load OpenAPI, assemble Smithy overlays, and compile the external codegen inputs."""
 
 import json
 import mimetypes
@@ -8,23 +8,24 @@ from typing import Any, cast
 
 import httpcore
 import httpx
-from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.manifest import Manifest
-from spitzeisen.codegen.parser import ParsedOpenAPI
+from spitzeisen.codegen.openapi import import_openapi
+from spitzeisen.codegen.parser import ParsedSmithy
 from spitzeisen.codegen.parser.errors import ParseError
-from spitzeisen.codegen.policy import ClientPlan, compile_manifest
+from spitzeisen.codegen.policy import ClientPlan, TargetSettings, compile_model
+from spitzeisen.codegen.traits import model_customizations
 
 
 @dataclass(frozen=True, slots=True)
 class BuildInputs:
-    """Hydrated source inputs and their compiled SDK plan."""
+    """Original schemas, imported Smithy model, and the compiled SDK plan."""
 
-    manifest: Manifest
     spec: dict[str, Any]
+    smithy: dict[str, Any]
     client: ClientPlan
     warnings: tuple[ParseError, ...]
 
@@ -79,43 +80,34 @@ def load_document(*, source: str | Path, timeout: int) -> dict[str, Any]:
     return load_mapping(data, content_type)
 
 
-def load_manifest(path: Path) -> Manifest:
-    """Load and validate a Spitzeisen manifest."""
+def parse_smithy(model: dict[str, Any]) -> ParsedSmithy:
+    """Parse a Smithy JSON AST and add input-facing context to failures."""
     try:
-        data = path.read_bytes()
-    except OSError as err:
-        raise CodegenError(header="Unable to read config", detail=str(err)) from err
-    try:
-        loaded = load_mapping(data, "application/json" if path.suffix == ".json" else None)
-    except CodegenError as err:
-        raise CodegenError(header="Unable to parse config", detail=err.detail or str(err)) from err
-    try:
-        return Manifest.model_validate(loaded)
-    except ValidationError as err:
-        raise CodegenError(header="Unable to parse config", detail=str(err)) from err
+        return ParsedSmithy.from_dict(model)
+    except (TypeError, ValueError) as err:
+        raise CodegenError(header="Failed to parse imported Smithy model", detail=str(err)) from err
 
 
-def parse_openapi(spec: dict[str, Any]) -> ParsedOpenAPI:
-    """Parse OpenAPI data and add input-facing context to validation failures."""
-    try:
-        return ParsedOpenAPI.from_dict(spec)
-    except ValidationError as err:
-        detail = str(err)
-        if "swagger" in spec:
-            detail = "You may be trying to use a Swagger document; this is not supported by this project.\n\n" + detail
-        raise CodegenError(header="Failed to parse OpenAPI document", detail=detail) from err
-
-
-def load_compile_inputs(*, source: str | Path, manifest_path: Path, timeout: int) -> BuildInputs:
-    """Load both external inputs and compile them into one SDK plan."""
-    manifest = load_manifest(manifest_path)
+def load_compile_inputs(
+    *,
+    source: str | Path,
+    overlays: tuple[Path, ...],
+    target: TargetSettings,
+    timeout: int,
+) -> BuildInputs:
+    """Load OpenAPI, assemble Smithy and its overlays, then compile one SDK plan."""
     raw_openapi = load_document(source=source, timeout=timeout)
-    openapi = parse_openapi(raw_openapi)
+    imported = import_openapi(raw_openapi)
+    assembled = assemble_smithy(imported.model, overlays)
+    smithy = parse_smithy(assembled)
     try:
-        client = compile_manifest(manifest, openapi)
-    except ValueError as err:
+        client = compile_model(target, smithy, model_customizations(assembled))
+    except (TypeError, ValueError) as err:
         raise CodegenError(detail=str(err)) from err
-    warnings: list[ParseError] = list(openapi.errors)
-    for collection in openapi.operation_collections_by_tag.values():
-        warnings.extend(collection.parse_errors)
-    return BuildInputs(manifest=manifest, spec=raw_openapi, client=client, warnings=tuple(warnings))
+    warnings = (*imported.warnings, *smithy.errors)
+    return BuildInputs(
+        spec=raw_openapi,
+        smithy=assembled,
+        client=client,
+        warnings=warnings,
+    )

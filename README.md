@@ -113,21 +113,41 @@ Each operation has one scalar cost. steindamm's buckets satisfy the protocol wit
 
 ## Code generation (optional)
 
-`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`, which compiles OpenAPI 3.0 or 3.1
-plus a small manifest describing what OpenAPI cannot: what each call costs, how it paginates, and
-the public SDK names. Set `generate_model: false` and provide a response model by hand when the
-OpenAPI schema is incomplete or needs entirely custom behavior.
+`pip install "spitzeisen[codegen]"` adds `spitzeisen-gen`. It imports OpenAPI 3.0 or compatible
+OpenAPI 3.1 through pinned `smithy-translate` 0.7.8, assembles it with the official Smithy CLI and
+any local `.smithy` overlays, and keeps `datamodel-code-generator` as the Pydantic response-model
+backend. Java plus Coursier (`coursier`/`cs`) must be on `PATH`; this repository pins both through
+`mise`.
+
+A Smithy overlay supplies facts a mechanical import cannot infer reliably: rate-limit cost,
+page-number pagination, public names, client defaults, and vendor-specific query serialization.
+The overlay is assembled with the converted model, so stale shape references and invalid trait
+applications fail before generation. Apply `@sdkOperation(generateModel: false)` and provide a
+response model by hand when the source schema is incomplete or needs entirely custom behavior.
 
 Generation is one transaction, including Pydantic models and both client surfaces:
 
 ```bash
-spitzeisen-gen generate --path spec/openapi.yaml --manifest spec/manifest.yaml --output-path src/example_api
-spitzeisen-gen check --path spec/openapi.yaml --manifest spec/manifest.yaml --output-path src/example_api
+spitzeisen-gen generate --path spec/openapi.yaml --overlay spec/sdk.smithy \
+  --package example_api --client-name ExampleApi --output-path src/example_api
+spitzeisen-gen check --path spec/openapi.yaml --overlay spec/sdk.smithy \
+  --package example_api --client-name ExampleApi --output-path src/example_api
 ```
 
 Use `--url` instead of `--path` to fetch a document. `check` is suitable for CI and compares models
 as well as operations. The compiler architecture and file-by-file responsibilities are documented in
 [docs/codegen-architecture.md](docs/codegen-architecture.md).
+
+To inspect the exact intermediate model consumed by the frontend:
+
+```bash
+spitzeisen-gen import-openapi --path spec/openapi.yaml --overlay spec/sdk.smithy \
+  --output-path build/vendor.smithy.json
+```
+
+Spitzeisen does not vendor or reimplement an OpenAPI parser. OpenAPI 3.1 documents that rely on
+features which cannot be projected safely fail with a document path instead of generating partial
+Smithy placeholder shapes.
 
 Operation generation separates replaceable implementation from public extension points. Given an
 operation named `splits`, it produces this layout for each surface:
@@ -165,10 +185,20 @@ async with AsyncExampleApi(config) as api:
     splits = await api.splits_api.get_splits()
 ```
 
-Schema-derived models inherit `SpitzeisenModel`, which centralizes shared model policy while
-currently retaining Pydantic's defaults: unknown fields are ignored, and aliased fields are not
-also populated by field name. Keeping that policy in one shared base avoids repeating
-`model_config` in every generated class.
+Schema-derived models inherit `SpitzeisenModel`, which centralizes shared model policy. Unknown
+response fields are deliberately ignored for Smithy-style forward compatibility, while all
+declared fields and Pydantic constraints are validated. Aliased fields are not also populated by
+field name.
+
+Generated methods retain ergonomic keyword arguments. Input validation is permissive by default;
+enable Pydantic strict validation before request serialization per client config:
+
+```python
+config = AsyncSpitzeisenConfig(
+    base_url="https://api.example.test",
+    strict_inputs=True,
+)
+```
 
 The schema models in `models/_generated.py` are replaceable implementation. For every generated
 operation model, codegen creates a public subclass such as `models/splits.py` exactly once, and the
@@ -199,28 +229,30 @@ names resolve to the exact generated classes used by those responses.
 
 A client needing shared behaviour can still provide a base derived from `SpitzeisenModel` and
 select it with `spitzeisen-gen generate --base-class my_client.model_base.ClientModel`. Set
-`generate_model: false` for an entirely handwritten response model; define it under the public
-`models/<operation>.py` module expected by that operation.
+`@sdkOperation(generateModel: false)` for an entirely handwritten response model; define it under
+the public `models/<operation>.py` module expected by that operation.
 
-Generated GET operations honor OpenAPI query serialization for arrays and objects: `form`,
-`spaceDelimited`, and `pipeDelimited`, including `explode`. `deepObject` and `allowReserved`
-query serialization are not supported yet. Query values are always percent-encoded by httpx2.
-Set OpenAPI's `style` and `explode` on a query param when its wire representation differs from
-the defaults. Use manifest `coercion_style` for Spitzeisen's caller-input coercions such as `date`,
+Generated GET operations implement a constrained generic HTTP/JSON profile. Smithy delegates
+collection query serialization to a protocol, and arbitrary vendor APIs are not assumed to be AWS
+`restJson1`; imported query collections therefore default to comma-separated `form` values. Set
+`@pythonParameter(style: ..., explode: ...)` on the input member when the vendor uses
+`spaceDelimited`, `pipeDelimited`, or repeated values. `deepObject` and `allowReserved` are not
+supported. The trait's `coercion` member separately controls caller-input coercions such as `date`,
 `comma_list`, or `comma_choice_list`.
 
 ### Client defaults for request params
 
-The manifest's `client_default` is an SDK policy: it is a Python literal placed in the generated
-method signature and supplied when the caller omits that argument. It is distinct from an
-OpenAPI schema `default`; an optional schema default remains a fallback when no manifest override
-is supplied, while `client_default` takes precedence and may back an OpenAPI-required query or
-header param without making that param optional on the wire:
+Use Smithy's standard member `@default` when a value is part of the service model. For an SDK-only
+default, `@pythonParameter(clientDefault: ...)` places a Python literal in the generated method
+signature and supplies it when the caller omits the argument. A client default takes precedence and
+may back a Smithy-required query or header parameter without making that parameter optional on the
+wire:
 
-```yaml
-params:
-  limit:
-    client_default: "100"
+```smithy
+use vendor.api#ListThingsInput
+use spitzeisen.api#pythonParameter
+
+apply ListThingsInput$limit @pythonParameter(clientDefault: 100)
 ```
 
 The generated method is `limit: int = 100`, while request serialization still treats `limit` as
@@ -231,13 +263,19 @@ required path param. The generated URL still receives the default value; choose 
 only when silently selecting that resource is intentional.
 
 For a generated operation that controls the number of records requested per page, name that
-vendor param explicitly. `max_page_size` may be omitted when the matching OpenAPI schema
-declares its maximum:
+vendor param explicitly. `maxPageSize` may be omitted when the matching Smithy member has a
+`@range` maximum:
 
-```yaml
-pagination: page_number
-page_size_param: per_page
-max_page_size: 100
+```smithy
+use vendor.api#ListThings
+use spitzeisen.api#pageNumberPagination
+
+apply ListThings @pageNumberPagination(
+    page: "page"
+    pageSize: "per_page"
+    items: "results"
+    maxPageSize: 100
+)
 ```
 
 This per-request setting is separate from the generated method's `max_results`, which caps the
@@ -245,24 +283,27 @@ total number of records returned across all pages.
 
 Sorting wire names are explicit for the same reason. For separate vendor params:
 
-```yaml
-sort_style: param
-sort_param: order_by
-order_param: direction
+```smithy
+use vendor.api#ListThings
+use spitzeisen.api#sorting
+
+apply ListThings @sorting(style: "param", sort: "order_by", order: "direction")
 ```
 
-For a `field.direction` value, use `sort_style: suffix` and omit `order_param`. Generated
-argument types, allowed values, and defaults come from the matching OpenAPI params. When
-the document does not publish them, the manifest can name client-owned Literal aliases and
-provide defaults:
+For a `field.direction` value, use `style: "suffix"` and omit `order`. Generated
+argument types, allowed values, and defaults come from the matching Smithy input members. When
+the document does not publish them, `@sorting` can name client-owned Literal aliases and provide
+defaults:
 
-```yaml
-sort_style: suffix
-sort_param: order_by
-sort_literal: SortField
-order_literal: SortDirection
-sort_default: updated_at
-order_default: downward
+```smithy
+apply ListThings @sorting(
+    style: "suffix"
+    sort: "order_by"
+    sortLiteral: "SortField"
+    orderLiteral: "SortDirection"
+    sortDefault: "updated_at"
+    orderDefault: "downward"
+)
 ```
 
 The aliases are imported from the generated client's `models` module. Spitzeisen does not

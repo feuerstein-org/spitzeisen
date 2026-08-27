@@ -30,6 +30,9 @@ class AsyncSpitzeisenConfig(BaseModel):
         retry_backoff_floor: Lower bound time between retries in seconds.
         on_validation_error: Default behaviour of validated list methods. "raise" propagates
             `pydantic.ValidationError` on the first bad record; "skip" drops and logs them.
+        strict_inputs: Validate generated method arguments with Pydantic strict mode before
+            serialization. Off by default so Python-compatible values retain the permissive SDK
+            behavior; enable it when boundary validation is more important than coercion.
         http_client: The httpx2 client for this surface. Supply one when custom transport
             behaviour is required; otherwise Spitzeisen creates and owns it lazily.
         owns_http_client: Whether Spitzeisen closes `http_client` automatically. Set for a client
@@ -47,6 +50,7 @@ class AsyncSpitzeisenConfig(BaseModel):
     retry_backoff_base: float = Field(default=1.0, ge=0)
     retry_backoff_floor: float = Field(default=1.0, ge=0)
     on_validation_error: ValidationMode = "skip"
+    strict_inputs: bool = False
 
     http_client: AsyncClient | None = None
     owns_http_client: bool = False

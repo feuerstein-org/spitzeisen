@@ -66,6 +66,9 @@ async def main() -> None:
             language="en",
         )
 
+    if weather is None:
+        print("weather station not found")
+        return
     print(f"city: {weather.name}")
     print(f"temperature: {weather.main.temp}")
     print(f"condition: {weather.weather[0].description}")

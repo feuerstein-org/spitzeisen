@@ -1,6 +1,8 @@
 [tools]
 python = "3.14"
 uv = "latest"
+java = "temurin-17"
+coursier = "2.1.24"
 
 [tasks.install]
 description = "Install all dependencies including dev dependencies"
@@ -18,12 +20,16 @@ description = "Fail if _sync/ is stale relative to _async/"
 run = "uv run python build_sync.py --check"
 
 [tasks.codegen]
-description = "Regenerate the complete example weather SDK"
-run = "uv run spitzeisen-gen generate --path examples/spec/vendor.json --manifest examples/spec/manifest.yaml --output-path examples/weather_sdk"
+description = "Import OpenAPI, assemble its Smithy overlay, and regenerate the example SDK"
+run = "uv run spitzeisen-gen generate --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
+
+[tasks.import-openapi]
+description = "Write the weather OpenAPI conversion as an inspectable Smithy JSON AST"
+run = "uv run spitzeisen-gen import-openapi --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --output-path examples/spec/generated/vendor.smithy.json"
 
 [tasks.check-codegen]
 description = "Fail if any generated example SDK output is stale"
-run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --manifest examples/spec/manifest.yaml --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.demo-example]
 description = "Run the generated weather SDK against an offline fake transport"

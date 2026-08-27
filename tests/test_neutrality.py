@@ -106,6 +106,7 @@ async def test_weather_client_returns_a_validated_response(
         language="en",
     )
 
+    assert weather is not None
     assert weather.name == "Berlin"
     assert weather.main.temp == 22.4
     assert weather.weather[0].description == "clear sky"
@@ -133,6 +134,22 @@ async def test_weather_client_keeps_authentication_out_of_the_method_signature(
     await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
 
     assert router.requests[0].params["appid"] == "test-key"
+
+
+async def test_weather_client_can_enable_strict_keyword_input_validation(
+    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+) -> None:
+    """Strict mode rejects coercible values before making an HTTP request."""
+    api, router = weather_api
+    api.config.strict_inputs = True
+
+    with pytest.raises(ValidationError, match="valid number"):
+        await api.current_weather_api.get_current_weather(
+            latitude="52.52",  # type: ignore[arg-type] - deliberately exercising runtime validation
+            longitude=13.405,
+        )
+
+    assert not router.requests
 
 
 async def test_weather_client_maps_the_real_unauthorized_response(

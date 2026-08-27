@@ -1,5 +1,5 @@
 """
-Code generation: manifest validation, and what comes out the other end.
+Code generation: Smithy trait policy, and what comes out the other end.
 
 The fixture is a three-operation slice of a real vendor document, so these tests exercise the
 awkward parts of a genuine spec — dotted filter names, an enum on one operation's `sort` and
@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx2
 import pytest
-from pydantic import ValidationError
+from smithy_fixtures import smithy_model
 
 from spitzeisen import AsyncSpitzeisenConfig, NoLimit
 from spitzeisen.codegen.cli import is_current, normalize_model_header, write
@@ -30,9 +30,18 @@ from spitzeisen.codegen.generate import (
     model_exports_module,
     prune_spec,
 )
-from spitzeisen.codegen.inputs import parse_openapi
-from spitzeisen.codegen.manifest import Manifest
-from spitzeisen.codegen.policy import compile_manifest
+from spitzeisen.codegen.inputs import parse_smithy
+from spitzeisen.codegen.policy import TargetSettings, compile_model
+from spitzeisen.codegen.traits import (
+    HIDDEN,
+    PAGE_NUMBER_PAGINATION,
+    PYTHON_PARAMETER,
+    SDK_OPERATION,
+    SORTING,
+    operation_policy,
+    page_number_policy,
+    param_policy,
+)
 from spitzeisen.testing import FakeRouter
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -44,13 +53,9 @@ def spec() -> dict[str, Any]:
     return json.loads((FIXTURES / "vendor.json").read_text())
 
 
-def manifest_dict(**overrides: Any) -> dict[str, Any]:
-    """A minimal but realistic manifest."""
+def sdk_policy(**overrides: Any) -> dict[str, Any]:
+    """A compact test representation that is applied as Smithy traits."""
     base: dict[str, Any] = {
-        "vendor": "example",
-        "base_url": "https://api.example.test",
-        "package": "example_api",
-        "client_name": "ExampleApi",
         "operations": {
             "splits": {
                 "path": "/stocks/v1/splits",
@@ -77,20 +82,26 @@ def manifest_dict(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def compile_test_client(spec: dict[str, Any] | None, **overrides: Any):  # noqa: ANN201
+    """Build one parsed model with the same traits a handwritten overlay would apply."""
+    policy = sdk_policy(**overrides)
+    model = smithy_model(_complete_openapi(spec, policy))
+    _apply_sdk_traits(model, policy)
+    return compile_model(TargetSettings(package="example_api", client_name="ExampleApi"), parse_smithy(model))
+
+
 def render(spec: dict[str, Any] | None, **overrides: Any) -> dict[str, str]:
     """Generate and return the modules keyed by a readable suffix of their path."""
-    manifest = Manifest.model_validate(manifest_dict(**overrides))
     package_root = Path("example_api")
-    openapi = parse_openapi(_complete_openapi(spec, manifest))
-    modules = generate_plan(compile_manifest(manifest, openapi), package_root)
+    modules = generate_plan(compile_test_client(spec, **overrides), package_root)
     return {module.path.relative_to(package_root).as_posix(): module.source for module in modules}
 
 
-def _complete_openapi(spec: dict[str, Any] | None, manifest: Manifest) -> dict[str, Any]:
+def _complete_openapi(spec: dict[str, Any] | None, policy: dict[str, Any]) -> dict[str, Any]:
     """Make small inline test cases valid OpenAPI documents before invoking the typed parser."""
     if spec is None:
         spec = {"paths": {}}
-        for operation in manifest.operations.values():
+        for operation in policy["operations"].values():
             path_params = [
                 {
                     "name": name,
@@ -98,11 +109,11 @@ def _complete_openapi(spec: dict[str, Any] | None, manifest: Manifest) -> dict[s
                     "required": True,
                     "schema": {"type": "string"},
                 }
-                for _, name, _, _ in string.Formatter().parse(operation.path)
+                for _, name, _, _ in string.Formatter().parse(operation["path"])
                 if name
             ]
-            spec["paths"][operation.path] = {
-                operation.method.value: {
+            spec["paths"][operation["path"]] = {
+                operation.get("method", "get"): {
                     "parameters": path_params,
                     "responses": {"200": {"description": "OK"}},
                 },
@@ -124,6 +135,182 @@ def _complete_openapi(spec: dict[str, Any] | None, manifest: Manifest) -> dict[s
     return completed
 
 
+def _apply_sdk_traits(model: dict[str, Any], policy: dict[str, Any]) -> None:  # noqa: C901, PLR0912, PLR0915
+    """Apply test policy as JSON AST traits, mirroring a `.smithy` overlay."""
+    shapes = model["shapes"]
+    operations = {shape_id: shape for shape_id, shape in shapes.items() if shape.get("type") == "operation"}
+    for shape in operations.values():
+        shape.setdefault("traits", {})[HIDDEN] = {}
+
+    for key, settings in policy["operations"].items():
+        method = settings.get("method", "get").upper()
+        operation_id = settings.get("operation_id")
+        matching = [
+            (shape_id, shape)
+            for shape_id, shape in operations.items()
+            if (
+                shape_id.rsplit("#", 1)[-1].casefold() == str(operation_id).casefold()
+                if operation_id is not None
+                else shape["traits"]["smithy.api#http"]["uri"] == settings["path"]
+                and shape["traits"]["smithy.api#http"]["method"] == method
+            )
+        ]
+        if len(matching) != 1:
+            msg = (
+                f"{method} {settings['path']} is absent from the Smithy model; the vendor may have moved or renamed it"
+            )
+            raise ValueError(msg)
+        _, operation = matching[0]
+        traits = operation["traits"]
+        traits.pop(HIDDEN, None)
+        sdk = {
+            "name": key,
+            "methodName": settings["method_name"],
+            "responseModel": settings["model"],
+            "generateModel": settings.get("generate_model", True),
+            "shape": settings.get("shape", "collection"),
+            "notFound": settings.get("not_found", "raise"),
+            "cost": settings.get("cost", 1),
+        }
+        if settings.get("docs_url") is not None:
+            sdk["documentationUrl"] = settings["docs_url"]
+        if settings.get("results_key") is not None:
+            sdk["resultPath"] = settings["results_key"]
+        traits[SDK_OPERATION] = sdk
+        operation_policy(traits)
+        if settings.get("summary"):
+            traits["smithy.api#documentation"] = settings["summary"]
+
+        pagination = settings.get("pagination", "none")
+        if pagination == "page_number":
+            page_trait: dict[str, Any] = {"page": settings.get("page_param", "page")}
+            for source, target in (
+                ("page_size_param", "pageSize"),
+                ("max_page_size", "maxPageSize"),
+                ("results_key", "items"),
+            ):
+                if source in settings and settings[source] is not None:
+                    page_trait[target] = settings[source]
+            traits[PAGE_NUMBER_PAGINATION] = page_trait
+            page_number_policy(traits)
+        elif pagination != "none":
+            msg_0 = f"unsupported pagination {pagination!r}"
+            raise ValueError(msg_0)
+
+        sort_style = settings.get("sort_style", "none")
+        sort_keys = {
+            "sort_param",
+            "order_param",
+            "sort_literal",
+            "order_literal",
+            "sort_default",
+            "order_default",
+        }
+        if sort_style != "none":
+            sorting: dict[str, Any] = {"style": sort_style}
+            for source, target in (
+                ("sort_param", "sort"),
+                ("order_param", "order"),
+                ("sort_literal", "sortLiteral"),
+                ("order_literal", "orderLiteral"),
+                ("sort_default", "sortDefault"),
+                ("order_default", "orderDefault"),
+            ):
+                if source in settings and settings[source] is not None:
+                    sorting[target] = settings[source]
+            traits[SORTING] = sorting
+        elif any(settings.get(name) is not None for name in sort_keys):
+            msg_0 = "sorting settings require sort_style"
+            raise ValueError(msg_0)
+
+        input_shape = shapes[operation["input"]["target"]]
+        members = input_shape["members"]
+        by_wire_name: dict[str, dict[str, Any]] = {}
+        for member_name, member in members.items():
+            member_traits = member.setdefault("traits", {})
+            wire_name = member_traits.get("smithy.api#httpQuery") or member_traits.get("smithy.api#httpHeader")
+            if "smithy.api#httpLabel" in member_traits:
+                wire_name = member_name
+            if isinstance(wire_name, str):
+                by_wire_name[wire_name] = member
+
+        param_settings = {**settings.get("params", {})}
+        for wire_name, name in settings.get("path_params", {}).items():
+            param_settings.setdefault(wire_name, {})["name"] = name
+        for values in param_settings.values():
+            unsupported = set(values) & {"default", "query_style", "type"}
+            if unsupported:
+                msg_0 = f"unsupported @pythonParameter members: {sorted(unsupported)}"
+                raise ValueError(msg_0)
+            if values.get("style") not in {None, "form", "spaceDelimited", "pipeDelimited"}:
+                msg_0 = (
+                    f"trait member 'style' must be one of ['form', 'pipeDelimited', 'spaceDelimited'], "
+                    f"got {values['style']!r}"
+                )
+                raise ValueError(
+                    msg_0,
+                )
+            if "client_default" in values:
+                try:
+                    client_default = ast.literal_eval(values["client_default"])
+                except (SyntaxError, ValueError) as err:
+                    msg_0 = "clientDefault must be a literal Smithy node"
+                    raise ValueError(msg_0) from err
+            else:
+                client_default = None
+            validation_trait = {
+                target: values[source]
+                for source, target in (
+                    ("name", "name"),
+                    ("style", "style"),
+                    ("explode", "explode"),
+                    ("coercion_style", "coercion"),
+                    ("coerce_function", "function"),
+                    ("literal", "literal"),
+                    ("annotation", "annotation"),
+                )
+                if source in values
+            }
+            if "client_default" in values:
+                validation_trait["clientDefault"] = client_default
+            param_policy({PYTHON_PARAMETER: validation_trait})
+        unknown = sorted(set(param_settings) - set(by_wire_name))
+        if unknown:
+            msg_0 = f"parameter traits refer to members absent from the selected Smithy operation: {unknown}"
+            raise ValueError(msg_0)
+        for wire_name, values in param_settings.items():
+            member_traits = by_wire_name[wire_name].setdefault("traits", {})
+            parameter: dict[str, Any] = {}
+            for source, target in (
+                ("name", "name"),
+                ("style", "style"),
+                ("explode", "explode"),
+                ("coercion_style", "coercion"),
+                ("coerce_function", "function"),
+                ("literal", "literal"),
+                ("annotation", "annotation"),
+            ):
+                if source in values:
+                    parameter[target] = values[source]
+            if "client_default" in values:
+                try:
+                    parameter["clientDefault"] = ast.literal_eval(values["client_default"])
+                except (SyntaxError, ValueError) as err:
+                    msg_0 = "clientDefault must be a literal Smithy node"
+                    raise ValueError(msg_0) from err
+            if parameter:
+                member_traits[PYTHON_PARAMETER] = parameter
+            if "description" in values:
+                member_traits["smithy.api#documentation"] = values["description"]
+            if values.get("required") is True:
+                member_traits["smithy.api#required"] = {}
+        for wire_name in settings.get("exclude_params", []):
+            if wire_name not in by_wire_name:
+                msg_0 = f"hidden parameter {wire_name!r} is absent from the operation"
+                raise ValueError(msg_0)
+            by_wire_name[wire_name].setdefault("traits", {})[HIDDEN] = {}
+
+
 def test_generated_model_header_is_a_prose_comment() -> None:
     """The upstream metadata header should not resemble commented-out configuration."""
     source = "# generated by datamodel-codegen:\n#   filename:  pruned.json\n\nclass Thing:\n    pass\n"
@@ -142,9 +329,8 @@ def test_generated_model_names_reads_top_level_public_classes() -> None:
 
 def test_model_exports_promote_response_extensions_and_nested_schema_types(spec: dict[str, Any]) -> None:
     """Consumers can name nested types while root responses resolve to user-owned subclasses."""
-    manifest = Manifest.model_validate(manifest_dict())
     source = "class Wind:\n    pass\n\nclass Split:\n    pass\n"
-    client = compile_manifest(manifest, parse_openapi(spec))
+    client = compile_test_client(spec)
 
     module = model_exports_module(client, Path("example_api"), source)
 
@@ -160,157 +346,155 @@ def test_model_exports_promote_response_extensions_and_nested_schema_types(spec:
 
 def test_prune_spec_uses_the_compiled_client_plan(spec: dict[str, Any]) -> None:
     """Model pruning follows the operations selected during policy compilation."""
-    manifest = Manifest.model_validate(manifest_dict())
-
-    pruned = prune_spec(spec, compile_manifest(manifest, parse_openapi(spec)))
+    pruned = prune_spec(spec, compile_test_client(spec))
 
     assert set(pruned["paths"]) == {"/stocks/v1/splits"}
 
 
 def test_operation_cost_must_be_scalar() -> None:
     """One operation draws one scalar amount from the configured limiter."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["cost"] = {"daily": 1}
 
-    with pytest.raises(ValidationError, match="valid number"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(TypeError, match="must be a number"):
+        render(None, operations=operations)
 
 
 def test_a_choice_style_param_needs_a_literal() -> None:
     """`comma_choice_list` validates against a Literal, so it has to name which one."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"].pop("literal")
 
-    with pytest.raises(ValidationError, match="requires `literal`"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="requires literal"):
+        render(None, operations=operations)
 
 
-def test_manifest_client_default_can_back_a_required_param() -> None:
+def test_client_default_can_back_a_required_param(spec: dict[str, Any]) -> None:
     """An SDK default may back a wire-required param while preserving its API requirement."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"].update(
         {"required": True, "client_default": "[]"},
     )
 
-    manifest = Manifest.model_validate(manifest_dict(operations=operations))
-
-    override = manifest.operations["splits"].params["adjustment_type.any_of"]
-    assert override.client_default == "[]"
+    source = render(spec, operations=operations)["_async/_generated/splits.py"]
+    assert "adjustment_types: list[AdjustmentType] = []" in source
 
 
-def test_manifest_param_default_name_is_client_default() -> None:
-    """The manifest deliberately rejects the ambiguous legacy `default` key."""
-    operations = manifest_dict()["operations"]
+def test_parameter_trait_rejects_an_ambiguous_default_member() -> None:
+    """Smithy @default and SDK-only clientDefault remain distinct."""
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"]["default"] = "[]"
 
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="unsupported @pythonParameter"):
+        render(None, operations=operations)
 
 
-def test_manifest_param_annotation_has_no_type_alias(spec: dict[str, Any]) -> None:
-    """Manifest type overrides are annotations, with no compatibility spelling."""
-    operations = manifest_dict()["operations"]
+def test_parameter_annotation_has_no_compatibility_alias(spec: dict[str, Any]) -> None:
+    """Parameter type overrides use the explicit annotation trait member."""
+    operations = sdk_policy()["operations"]
     param = operations["splits"]["params"]["adjustment_type.any_of"]
     param["annotation"] = "list[str]"
 
-    manifest = Manifest.model_validate(manifest_dict(operations=operations))
-
-    assert manifest.operations["splits"].params["adjustment_type.any_of"].annotation == "list[str]"
     source = render(spec, operations=operations)["_async/_generated/splits.py"]
     assert "adjustment_types: list[str] | None = None" in source
 
     param.pop("annotation")
     param["type"] = "list[str]"
-    with pytest.raises(ValidationError, match="type"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="unsupported @pythonParameter"):
+        render(spec, operations=operations)
 
 
 def test_client_defaults_are_literals_not_generated_source() -> None:
-    """A manifest cannot smuggle executable expressions into a generated signature."""
-    operations = manifest_dict()["operations"]
+    """SDK defaults are Smithy nodes, not generated Python source."""
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"]["client_default"] = "load_secret()"
 
-    with pytest.raises(ValidationError, match="`client_default` must be a Python literal"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="clientDefault must be a literal Smithy node"):
+        render(None, operations=operations)
 
 
 def test_max_page_size_requires_its_wire_param_name() -> None:
-    """OpenAPI does not identify pagination params, so the manifest must do so."""
-    operations = manifest_dict()["operations"]
+    """The page-number trait must identify its page-size member."""
+    operations = sdk_policy()["operations"]
     operations["splits"].pop("page_size_param")
 
-    with pytest.raises(ValidationError, match=r"max_page_size.*requires.*page_size_param"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match=r"maxPageSize.*requires pageSize"):
+        render(None, operations=operations)
 
 
 @pytest.mark.parametrize(
-    ("settings", "match"),
+    ("settings", "error", "match"),
     [
-        ({"sort_style": "suffix"}, r"sort_style='suffix'.*requires `sort_param`"),
+        ({"sort_style": "suffix"}, TypeError, r"trait member 'sort'.*non-empty string"),
         (
             {"sort_style": "suffix", "sort_param": "ordering", "order_param": "direction"},
-            r"sort_style='suffix'.*cannot declare `order_param`",
+            ValueError,
+            r"@sorting style 'suffix' cannot declare order",
         ),
         (
             {"sort_style": "param", "sort_param": "ordering"},
-            r"sort_style='param'.*requires `order_param`",
+            ValueError,
+            r"@sorting style 'param' requires order",
         ),
     ],
 )
-def test_sorting_wire_params_must_match_the_selected_style(settings: dict[str, str], match: str) -> None:
-    """Sorting metadata is explicit and contradictory combinations fail at manifest load."""
+def test_sorting_wire_params_must_match_the_selected_style(
+    settings: dict[str, str],
+    error: type[Exception],
+    match: str,
+) -> None:
+    """Sorting traits reject contradictory wire-member combinations."""
     operations = {"records": {"path": "/records", "method_name": "get_records", "model": "Record", **settings}}
 
-    with pytest.raises(ValidationError, match=match):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(error, match=match):
+        render(None, operations=operations)
 
 
 def test_single_resource_policy_rejects_collection_controls() -> None:
     """A setting the single-object renderer cannot honor is rejected rather than ignored."""
     operations = single_operation(sort_style="suffix", sort_param="sort", sort_default="name", order_default="asc")
 
-    with pytest.raises(ValidationError, match=r"single.*collection sorting"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match=r"single.*sorting"):
+        render(None, operations=operations)
 
 
 @pytest.mark.parametrize("coerce_function", ["not.valid", "class"])
 def test_a_custom_coerce_function_must_be_a_client_params_identifier(coerce_function: str) -> None:
-    """The manifest names a client-owned import, not an arbitrary source expression."""
-    operations = manifest_dict()["operations"]
+    """The parameter trait names a client-owned import, not an arbitrary expression."""
+    operations = sdk_policy()["operations"]
     param = operations["splits"]["params"]["adjustment_type.any_of"]
     param["coercion_style"] = "plain"
     param["coerce_function"] = coerce_function
 
-    with pytest.raises(ValidationError, match="valid Python identifier"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="valid Python identifier"):
+        render(None, operations=operations)
 
 
 def test_a_custom_coerce_function_cannot_compete_with_a_builtin_style() -> None:
     """A param must have exactly one source of coercion behavior."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"]["coerce_function"] = "coerce_adjustment_types"
 
-    with pytest.raises(ValidationError, match="cannot be combined"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="cannot be combined"):
+        render(None, operations=operations)
 
 
 def test_an_operation_missing_from_the_spec_stops_generation(spec: dict[str, Any]) -> None:
     """
     Vendor drift must fail loudly.
 
-    This is the check that catches a path being renamed under us — the reason the manifest is
-    resolved against the document rather than trusted on its own.
+    This mirrors Smithy assembly failing when an overlay target disappears after a vendor update.
     """
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["path"] = "/stocks/v1/splits-renamed"
 
     with pytest.raises(ValueError, match="vendor may have moved or renamed it"):
         render(spec, operations=operations)
 
 
-def test_manifest_selects_methods_but_the_runtime_reports_unsupported_generation(spec: dict[str, Any]) -> None:
+def test_service_model_selects_methods_but_the_runtime_reports_unsupported_generation(spec: dict[str, Any]) -> None:
     """The compiler preserves every method while the current GET renderer has an explicit boundary."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["method"] = "post"
     path_item = spec["paths"]["/stocks/v1/splits"]
     path_item["post"] = path_item.pop("get")
@@ -404,21 +588,20 @@ def test_public_operation_and_client_scaffolds_wrap_generated_bases(spec: dict[s
     assert "from example_api.models._exports import *" in model_facade
 
 
-def test_public_operation_docstring_has_a_friendly_fallback(spec: dict[str, Any]) -> None:
-    """A manifest without a summary still produces useful public API documentation."""
-    operations = manifest_dict()["operations"]
+def test_public_operation_docstring_uses_smithy_documentation(spec: dict[str, Any]) -> None:
+    """An operation without an override inherits Smithy documentation."""
+    operations = sdk_policy()["operations"]
     operations["splits"].pop("summary")
 
     operation = render(spec, operations=operations)["_async/splits.py"]
 
-    assert '"""Access the splits API."""' in operation
+    assert "Contains historical stock split and reverse split events" in operation
 
 
 def test_only_public_extension_modules_are_create_once(spec: dict[str, Any]) -> None:
     """Generated bases stay replaceable while public extension files become SDK-owned."""
     package_root = Path("example_api")
-    manifest = Manifest.model_validate(manifest_dict())
-    modules = generate_plan(compile_manifest(manifest, parse_openapi(spec)), package_root)
+    modules = generate_plan(compile_test_client(spec), package_root)
 
     create_once = {module.path.relative_to(package_root).as_posix() for module in modules if module.create_once}
     assert create_once == {
@@ -476,12 +659,12 @@ def test_docstrings_are_written_for_their_surface(spec: dict[str, Any]) -> None:
     assert "await" not in synchronous
 
 
-def test_manifest_shapes_the_public_signature(spec: dict[str, Any]) -> None:
+def test_parameter_traits_shape_the_public_signature(spec: dict[str, Any]) -> None:
     """
     A wire param can surface under a Python-friendly name.
 
     `adjustment_type.any_of` is not a Python identifier and `adjustment_types: list[...]` is
-    a usable argument name, so the manifest maps one onto the other.
+    a usable argument name, so the overlay maps one onto the other.
     """
     source = render(spec)["_async/_generated/splits.py"]
 
@@ -490,8 +673,8 @@ def test_manifest_shapes_the_public_signature(spec: dict[str, Any]) -> None:
     assert 'name="adjustment_type.any_of",' in source
 
 
-def test_openapi_required_query_param_is_required_in_the_signature(spec: dict[str, Any]) -> None:
-    """A required OpenAPI query param has no default and rejects a supplied None."""
+def test_smithy_required_query_param_is_required_in_the_signature(spec: dict[str, Any]) -> None:
+    """A required Smithy query member has no default and rejects a supplied None."""
     params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
     next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
 
@@ -503,11 +686,11 @@ def test_openapi_required_query_param_is_required_in_the_signature(spec: dict[st
     assert 'param_name="execution_date_gte"' in source
 
 
-def test_manifest_cannot_weaken_an_openapi_required_param(spec: dict[str, Any]) -> None:
-    """The OpenAPI document remains authoritative when it marks a param required."""
+def test_parameter_traits_cannot_weaken_a_smithy_required_param(spec: dict[str, Any]) -> None:
+    """The Smithy model remains authoritative when it marks a param required."""
     params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
     next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["execution_date.gte"] = {"required": False}
 
     source = render(spec, operations=operations)["_async/_generated/splits.py"]
@@ -516,11 +699,11 @@ def test_manifest_cannot_weaken_an_openapi_required_param(spec: dict[str, Any]) 
     assert "execution_date_gte: str | None = None" not in source
 
 
-def test_manifest_client_default_can_back_an_openapi_required_param(spec: dict[str, Any]) -> None:
+def test_client_default_trait_can_back_a_smithy_required_param(spec: dict[str, Any]) -> None:
     """An explicit SDK default makes the caller argument optional, not the wire param."""
     params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
     next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["execution_date.gte"] = {"client_default": "'today'"}
 
     source = render(spec, operations=operations)["_async/_generated/splits.py"]
@@ -533,7 +716,7 @@ def test_required_param_client_default_cannot_be_none(spec: dict[str, Any]) -> N
     """A required wire param needs a value that can actually be serialized."""
     params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
     next(param for param in params if param["name"] == "execution_date.gte")["required"] = True
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["execution_date.gte"] = {"client_default": "None"}
 
     message = r"required param 'execution_date\.gte' cannot declare a client_default of None"
@@ -563,7 +746,7 @@ def test_path_params_can_have_client_defaults() -> None:
     assert 'order_id=require_value(order_id, "order_id")' in source
 
 
-def test_openapi_param_sources_and_locations_are_honoured() -> None:
+def test_smithy_param_sources_and_locations_are_honoured() -> None:
     """Path-item params, local refs and every supported wire location reach generated code."""
     spec = {
         "components": {
@@ -633,32 +816,6 @@ def test_openapi_param_sources_and_locations_are_honoured() -> None:
     assert "headers=headers," in source
 
 
-def test_openapi_cookie_params_are_rejected_until_supported() -> None:
-    """Failing generation is safer than emitting an operation that silently drops a cookie."""
-    spec = {
-        "paths": {
-            "/v1/accounts": {
-                "get": {
-                    "parameters": [
-                        {"name": "session", "in": "cookie", "schema": {"type": "string"}},
-                    ],
-                },
-            },
-        },
-    }
-    operations = {
-        "account": {
-            "path": "/v1/accounts",
-            "method_name": "get_account",
-            "model": "Account",
-            "shape": "single",
-        },
-    }
-
-    with pytest.raises(ValueError, match="unsupported location 'cookie'"):
-        render(spec, operations=operations)
-
-
 def test_schema_less_content_param_is_skipped_like_upstream() -> None:
     """The parser follows upstream and skips params which do not carry ``schema``."""
     spec = {
@@ -690,8 +847,8 @@ def test_schema_less_content_param_is_skipped_like_upstream() -> None:
     assert "filter:" not in source
 
 
-def test_openapi_query_serialization_metadata_reaches_generated_code() -> None:
-    """Array schemas and their OpenAPI style settings shape the generated request."""
+def test_generic_smithy_query_collections_use_the_profile_default() -> None:
+    """The generic HTTP/JSON profile uses comma-separated collection query values."""
     spec = {
         "paths": {
             "/v1/search": {
@@ -722,11 +879,11 @@ def test_openapi_query_serialization_metadata_reaches_generated_code() -> None:
 
     assert "symbol: list[str] | None = None" in source
     assert 'style="form"' in source
-    assert "explode=True" in source
+    assert "explode=False" in source
 
 
-def test_manifest_uses_openapi_style_and_separate_coercion_style() -> None:
-    """The manifest's `style` is wire serialization, not Spitzeisen coercion."""
+def test_parameter_trait_separates_query_style_and_coercion() -> None:
+    """The trait's `style` is wire serialization, not Spitzeisen coercion."""
     spec = {
         "paths": {
             "/v1/search": {
@@ -759,16 +916,16 @@ def test_manifest_uses_openapi_style_and_separate_coercion_style() -> None:
 
 
 def test_legacy_query_style_and_coercion_values_in_style_are_rejected() -> None:
-    """The direct rename deliberately provides no manifest compatibility aliases."""
-    operations = manifest_dict()["operations"]
+    """Custom traits deliberately provide no compatibility aliases."""
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["adjustment_type.any_of"] = {"query_style": "form"}
 
-    with pytest.raises(ValidationError, match="query_style"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="query_style"):
+        render(None, operations=operations)
 
     operations["splits"]["params"]["adjustment_type.any_of"] = {"style": "comma_choice_list"}
-    with pytest.raises(ValidationError, match="comma_choice_list"):
-        Manifest.model_validate(manifest_dict(operations=operations))
+    with pytest.raises(ValueError, match="comma_choice_list"):
+        render(None, operations=operations)
 
 
 def test_openapi_deep_object_query_serialization_is_rejected() -> None:
@@ -798,16 +955,17 @@ def test_openapi_deep_object_query_serialization_is_rejected() -> None:
             "method_name": "search",
             "model": "SearchResult",
             "shape": "single",
+            "params": {"filter": {"style": "deepObject"}},
         },
     }
 
-    with pytest.raises(ValueError, match="style 'deepObject' is unsupported"):
+    with pytest.raises(ValueError, match="must be one of"):
         render(spec, operations=operations)
 
 
-def test_manifest_can_import_and_call_a_client_owned_coerce_function(spec: dict[str, Any]) -> None:
+def test_parameter_trait_can_import_and_call_a_client_owned_coerce_function(spec: dict[str, Any]) -> None:
     """A client can apply vendor-specific param semantics without hand-writing an operation."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     param = operations["splits"]["params"]["adjustment_type.any_of"]
     param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
     source = render(spec, operations=operations)["_async/_generated/splits.py"]
@@ -821,7 +979,7 @@ def test_manifest_can_import_and_call_a_client_owned_coerce_function(spec: dict[
 
 def test_custom_coerce_function_can_omit_a_literal(spec: dict[str, Any]) -> None:
     """Custom coercers receive an explicit None when they do not need a client-owned Literal."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     param = operations["splits"]["params"]["adjustment_type.any_of"]
     param.pop("literal")
     param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
@@ -832,11 +990,11 @@ def test_custom_coerce_function_can_omit_a_literal(spec: dict[str, Any]) -> None
 
 
 def test_param_overrides_must_exist_in_the_selected_operation(spec: dict[str, Any]) -> None:
-    """A vendor removing a configured param is reported as manifest/spec drift."""
-    operations = manifest_dict()["operations"]
+    """A vendor removing an overlay target is reported as Smithy model drift."""
+    operations = sdk_policy()["operations"]
     operations["splits"]["params"]["removed_filter"] = {"name": "removed_filter"}
 
-    with pytest.raises(ValueError, match=r"removed_filter.*absent from the selected OpenAPI operation"):
+    with pytest.raises(ValueError, match=r"members absent.*removed_filter"):
         render(spec, operations=operations)
 
 
@@ -914,9 +1072,9 @@ def test_sorting_uses_explicit_wire_names_and_openapi_direction_values(spec: dic
     assert 'Literal["asc", "desc"]' not in source
 
 
-def test_suffix_sorting_can_use_manifest_owned_literals_and_defaults(spec: dict[str, Any]) -> None:
+def test_suffix_sorting_can_use_trait_owned_literals_and_defaults(spec: dict[str, Any]) -> None:
     """A partial OpenAPI document can delegate closed sorting types to the client package."""
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"].update(
         {
             "sort_literal": "SortField",
@@ -938,7 +1096,7 @@ def test_suffix_sorting_can_use_manifest_owned_literals_and_defaults(spec: dict[
 
 def test_page_size_falls_back_to_the_spec(spec: dict[str, Any]) -> None:
     """
-    The vendor states its own maximum; repeating it in the manifest invites drift.
+    The vendor states its own maximum; repeating it in the custom trait invites drift.
 
     `/v3/reference/tickers` declares `limit.max: 1000` in its pagination extension.
     """
@@ -962,7 +1120,7 @@ def test_page_size_param_name_is_explicit(spec: dict[str, Any]) -> None:
     """A vendor's `per_page` param is generated without assuming the name `limit`."""
     params = spec["paths"]["/stocks/v1/splits"]["get"]["parameters"]
     next(param for param in params if param["name"] == "limit")["name"] = "per_page"
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     operations["splits"]["page_size_param"] = "per_page"
 
     source = render(spec, operations=operations)["_async/_generated/splits.py"]
@@ -1053,8 +1211,8 @@ def test_not_found_is_independent_of_shape() -> None:
 
 def test_absent_as_empty_is_rejected_for_a_collection() -> None:
     """Nothing honours it on the pagination path yet, and a key that silently does nothing is worse."""
-    with pytest.raises(ValidationError, match="only supported for shape='single'"):
-        Manifest.model_validate(manifest_dict(operations=single_operation(shape="collection", not_found="empty")))
+    with pytest.raises(ValueError, match="only with a single response"):
+        render(None, operations=single_operation(shape="collection", not_found="empty"))
 
 
 def test_a_single_resource_operation_without_an_envelope_returns_the_body() -> None:
@@ -1070,7 +1228,7 @@ def test_a_single_resource_operation_without_an_envelope_returns_the_body() -> N
 
 
 def test_openapi_params_feed_the_same_policy_pipeline() -> None:
-    """OpenAPI owns wire params while the manifest owns friendly SDK presentation."""
+    """Standard Smithy owns wire params while custom traits own friendly SDK presentation."""
     operations = {
         "strikes": {
             "path": "/datav2/strikes",
@@ -1146,7 +1304,7 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
     (package / "models" / "__init__.py").write_text(
         'from typing import Literal\nAdjustmentType = Literal["forward_split", "reverse_split", "stock_dividend"]\n',
     )
-    operations = manifest_dict()["operations"]
+    operations = sdk_policy()["operations"]
     param = operations["splits"]["params"]["adjustment_type.any_of"]
     param.update({"coercion_style": "plain", "coerce_function": "coerce_adjustment_types"})
     operations["splits"]["params"]["ticker"] = {"required": True}
@@ -1189,6 +1347,6 @@ def test_generated_client_runs_against_the_runtime(spec: dict[str, Any], tmp_pat
     assert [record.ticker for record in records] == ["AAPL"]
     assert records[0].execution_date == date(2020, 8, 31)
     assert len(router.requests) == 2  # The page-number strategy requests its empty terminal page.
-    # The manifest's comma_choice_list shaping reached the wire under the vendor's own param name.
+    # The parameter trait's comma_choice_list shaping reached the vendor's wire name.
     assert router.requests[0].params["adjustment_type.any_of"] == "forward_split"
     assert router.requests[0].params["sort"] == "execution_date.desc"
