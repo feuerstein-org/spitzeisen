@@ -155,6 +155,14 @@ well as operations. A runnable native model is available at
 architecture and file-by-file responsibilities are documented in
 [docs/codegen-architecture.md](docs/codegen-architecture.md).
 
+The production semantic frontend is a Smithy Build plugin written in Java; Python continues to own
+the ergonomic SDK renderer and Pydantic backend. The plugin JAR is bundled with the Python package,
+so generation invokes the same pinned Smithy toolchain from a source checkout or an installed
+wheel. Run `mise run smithy-java-spike` for the cross-frontend regression suite, including native
+Smithy, the real weather OpenAPI import, pagination, sorting, coercion, defaults, and model-property
+traits. The implementation boundary is documented in
+[`docs/java-smithy-frontend-spike.md`](docs/java-smithy-frontend-spike.md).
+
 To inspect the exact intermediate model consumed by the frontend:
 
 ```bash

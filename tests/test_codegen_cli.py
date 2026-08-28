@@ -12,8 +12,11 @@ from smithy_fixtures import native_weather_model, smithy_model
 from typer.testing import CliRunner
 
 from spitzeisen.codegen.cli import main
+from spitzeisen.codegen.inputs import parse_smithy
+from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import ImportedSmithy
-from spitzeisen.codegen.traits import PYTHON_PARAMETER, SDK_OPERATION
+from spitzeisen.codegen.policy import TargetSettings, compile_model
+from spitzeisen.codegen.traits import PYTHON_PARAMETER, SDK_OPERATION, model_customizations
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +52,20 @@ def converted_smithy(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
     monkeypatch.setattr("spitzeisen.codegen.cli.assemble_smithy", assemble)
+
+    def compile_frontend(
+        assembled: dict[str, Any],
+        *,
+        target: TargetSettings,
+        working_directory: Path | None,
+    ) -> FrontendResult:
+        del working_directory
+        return FrontendResult(
+            client=compile_model(target, parse_smithy(assembled), model_customizations(assembled)),
+            model_schema={},
+        )
+
+    monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
 
 def project(root: Path) -> tuple[Path, Path, Path]:
@@ -183,11 +200,20 @@ def test_cli_generates_pydantic_models_from_native_smithy(
     def assemble(*_args: object, **_kwargs: object) -> dict[str, Any]:
         return model
 
-    def convert_schema(*_args: object, **_kwargs: object) -> dict[str, Any]:
-        return schema
+    def compile_frontend(
+        assembled: dict[str, Any],
+        *,
+        target: TargetSettings,
+        working_directory: Path | None,
+    ) -> FrontendResult:
+        assert working_directory == tmp_path
+        return FrontendResult(
+            client=compile_model(target, parse_smithy(assembled)),
+            model_schema=schema,
+        )
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
-    monkeypatch.setattr("spitzeisen.codegen.inputs.smithy_to_json_schema", convert_schema)
+    monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
     arguments = [
         "--smithy",
         str(source),

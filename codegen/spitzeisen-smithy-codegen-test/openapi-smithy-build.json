@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "projections": {
+    "weather": {
+      "transforms": [
+        {
+          "name": "includeServices",
+          "args": {
+            "services": ["openapi#OpenapiService"]
+          }
+        },
+        {
+          "name": "removeUnusedShapes"
+        }
+      ],
+      "plugins": {
+        "spitzeisen-python-client-codegen": {
+          "service": "openapi#OpenapiService",
+          "package": "weather_sdk",
+          "clientName": "WeatherApi",
+          "vendor": "openweathermap"
+        }
+      }
+    }
+  }
+}

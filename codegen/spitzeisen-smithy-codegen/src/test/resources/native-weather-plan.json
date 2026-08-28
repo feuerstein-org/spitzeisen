@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "client": {
+    "service_id": "native.weather#WeatherService",
+    "vendor": "weather",
+    "package": "native_weather_sdk",
+    "client_name": "NativeWeatherApi",
+    "operations": [
+      {
+        "key": "weather",
+        "path": "/weather/{city}",
+        "method_name": "get_weather",
+        "model": "Weather",
+        "summary": "Return the current weather for one city.",
+        "generate_model": true,
+        "shape": "single",
+        "not_found": "empty",
+        "cost": 1.0,
+        "pagination": "none",
+        "page_start": 1,
+        "page_step": 1,
+        "params": [],
+        "query_params": [],
+        "header_params": [],
+        "path_params": [
+          {
+            "name": "city",
+            "wire_name": "city",
+            "annotation": "str",
+            "description": "City whose current weather should be returned.",
+            "coercion": "city",
+            "location": "query",
+            "style": "form",
+            "explode": true,
+            "required": true,
+            "client_default": null
+          }
+        ],
+        "example_args": ["city"],
+        "model_imports": [],
+        "coerce_function_imports": [],
+        "helpers": [
+          "NoPagination",
+          "build_header_params",
+          "require_value",
+          "serialize_query_param"
+        ],
+        "docs_url": null,
+        "results_key": null,
+        "page_param": null,
+        "sorting": null,
+        "page_size": null
+      }
+    ],
+    "response_shapes": ["native.weather#Weather"],
+    "model_aliases": {},
+    "model_type_overrides": {}
+  }
+}

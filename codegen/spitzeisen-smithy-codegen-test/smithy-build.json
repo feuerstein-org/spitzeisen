@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "sources": [
+    "../../examples/spec/native-weather.smithy",
+    "../spitzeisen-smithy-codegen/src/test/resources/policy-features.smithy"
+  ],
+  "projections": {
+    "weather": {
+      "transforms": [
+        {
+          "name": "includeServices",
+          "args": {
+            "services": ["native.weather#WeatherService"]
+          }
+        },
+        {
+          "name": "removeUnusedShapes"
+        }
+      ],
+      "plugins": {
+        "spitzeisen-python-client-codegen": {
+          "service": "native.weather#WeatherService",
+          "package": "native_weather_sdk",
+          "clientName": "NativeWeatherApi"
+        }
+      }
+    },
+    "policy": {
+      "transforms": [
+        {
+          "name": "includeServices",
+          "args": {
+            "services": ["policy.example#ExampleService"]
+          }
+        },
+        {
+          "name": "removeUnusedShapes"
+        }
+      ],
+      "plugins": {
+        "spitzeisen-python-client-codegen": {
+          "service": "policy.example#ExampleService",
+          "package": "policy_sdk",
+          "clientName": "PolicyApi"
+        }
+      }
+    }
+  }
+}

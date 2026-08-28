@@ -372,7 +372,7 @@ def _render(config: Config) -> RenderResult:
     generated_operations = tuple(operation for operation in inputs.client.operations if operation.generate_model)
     if generated_operations:
         try:
-            model_source = _generate_model_source(
+            model_source = generate_model_source(
                 schema=inputs.model_schema,
                 input_type=inputs.model_input_type,
                 working_directory=_working_directory(config),
@@ -414,7 +414,7 @@ def _validate_handwritten_models(client: ClientPlan, package_root: Path) -> None
     raise CodegenError(detail=f"generate_model=false requires handwritten model modules: {paths}")
 
 
-def _generate_model_source(
+def generate_model_source(
     *,
     schema: dict[str, Any],
     input_type: ModelInputType,

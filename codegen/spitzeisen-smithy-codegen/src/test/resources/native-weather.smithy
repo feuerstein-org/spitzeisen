@@ -7,7 +7,6 @@ use smithy.api#httpLabel
 use smithy.api#httpPayload
 use spitzeisen.api#sdkOperation
 
-/// A small service used to exercise Spitzeisen's Smithy-first pipeline.
 service WeatherService {
     version: "1.0"
     operations: [GetWeather]
@@ -31,27 +30,7 @@ operation GetWeather {
     }
 }
 
-/// A current weather observation.
 structure Weather {
-    /// Air temperature in degrees Celsius.
     @required
-    @range(min: -100, max: 100)
     temperature: Float
-
-    /// Broad current condition.
-    @required
-    status: WeatherStatus
-
-    details: WeatherDetails
-}
-
-enum WeatherStatus {
-    CLEAR = "clear"
-    RAIN = "rain"
-}
-
-structure WeatherDetails {
-    /// Human-readable conditions.
-    @length(min: 1, max: 200)
-    summary: String
 }
