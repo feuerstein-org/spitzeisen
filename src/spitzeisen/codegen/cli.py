@@ -473,7 +473,7 @@ def _generate_model_source(
             )
             source = normalize_model_header(output.read_text(encoding=encoding), input_type)
     destination = package_root / "models" / "_generated.py"
-    return format_python(source, str(destination))
+    return format_python(source, str(destination), package=client.package)
 
 
 def _working_directory(config: Config) -> Path:

@@ -171,6 +171,7 @@ operation named `splits`, it produces this layout for each surface:
 
 ```text
 example_api/
+  __init__.py       # root client/model facade; created once, safe to customize
   models/
     _generated.py    # schema-derived SpitzeisenModel classes; regenerated
     splits.py        # public Split subclass; created once, safe to customize
@@ -188,13 +189,15 @@ example_api/
     client.py         # SyncExampleApi; created once, safe to customize
 ```
 
-The public model, operation, and client files can remain empty subclasses or carry SDK-specific
-validators and behaviour. Running generation again preserves them while updating the `_generated`
-bases. The aggregate client shares one config across its operation properties and owns their
-context-manager lifecycle:
+The root package facade and public model, operation, and client files can remain as scaffolded or
+carry SDK-specific exports, validators, and behaviour. Running generation again preserves them
+while updating the `_generated` bases. Deleting the output package and generating from scratch
+recreates every required `__init__.py`, including the root facade that exports both clients and
+generated response models. The aggregate client shares one config across its operation properties
+and owns their context-manager lifecycle:
 
 ```python
-from example_api._async.client import AsyncExampleApi
+from example_api import AsyncExampleApi
 from spitzeisen import AsyncSpitzeisenConfig
 
 config = AsyncSpitzeisenConfig(base_url="https://api.example.test")
