@@ -13,6 +13,7 @@ from smithy_fixtures import native_weather_model, smithy_model
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.inputs import load_compile_inputs, load_mapping, parse_smithy
 from spitzeisen.codegen.ir import HTTPMethod, LiteralType, ParamLocationIR, PrimitiveKind, PrimitiveType
+from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import project_openapi_for_converter
 from spitzeisen.codegen.policy import TargetSettings, compile_model
 from spitzeisen.codegen.traits import PAGE_NUMBER_PAGINATION, SDK_OPERATION
@@ -182,6 +183,17 @@ def test_whole_input_pipeline_compiles_the_imported_smithy_model(
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", fake_assembler)
 
+    def compile_frontend(
+        assembled: dict[str, Any],
+        *,
+        target: TargetSettings,
+        working_directory: Path | None,
+    ) -> FrontendResult:
+        assert working_directory == tmp_path
+        return FrontendResult(client=compile_model(target, parse_smithy(assembled)), model_schema={})
+
+    monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
+
     inputs = load_compile_inputs(
         source=source,
         overlays=(overlay,),
@@ -216,21 +228,21 @@ def test_native_smithy_pipeline_builds_a_json_schema_model_input(
 
     expected_schema = {"$defs": {"Weather": {"type": "object"}}}
 
-    def convert_schema(
+    def compile_frontend(
         assembled: dict[str, Any],
         *,
-        service_id: str,
-        response_shapes: tuple[str, ...],
+        target: TargetSettings,
         working_directory: Path | None,
-    ) -> dict[str, Any]:
+    ) -> FrontendResult:
         assert assembled is model
-        assert service_id == "native.weather#WeatherService"
-        assert response_shapes == ("native.weather#Weather",)
         assert working_directory == tmp_path
-        return expected_schema
+        return FrontendResult(
+            client=compile_model(target, parse_smithy(assembled)),
+            model_schema=expected_schema,
+        )
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
-    monkeypatch.setattr("spitzeisen.codegen.inputs.smithy_to_json_schema", convert_schema)
+    monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
     inputs = load_compile_inputs(
         smithy_sources=(source,),

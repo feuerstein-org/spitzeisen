@@ -13,12 +13,11 @@ from ruamel.yaml.error import YAMLError
 
 from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.exceptions import CodegenError
+from spitzeisen.codegen.java_frontend import compile_smithy_frontend
 from spitzeisen.codegen.openapi import import_openapi
 from spitzeisen.codegen.parser import ParsedSmithy
 from spitzeisen.codegen.parser.errors import ParseError
-from spitzeisen.codegen.policy import ClientPlan, TargetSettings, compile_model
-from spitzeisen.codegen.smithy_jsonschema import smithy_to_json_schema
-from spitzeisen.codegen.traits import model_customizations
+from spitzeisen.codegen.policy import ClientPlan, TargetSettings
 
 type ModelInputType = Literal["openapi", "jsonschema"]
 
@@ -115,19 +114,12 @@ def load_compile_inputs(
         model_schema = {}
         model_input_type = "jsonschema"
         import_warnings = ()
-    smithy = parse_smithy(assembled)
-    try:
-        client = compile_model(target, smithy, model_customizations(assembled))
-    except (TypeError, ValueError) as err:
-        raise CodegenError(detail=str(err)) from err
+    working_directory = smithy_sources[0].parent if smithy_sources else overlays[0].parent if overlays else None
+    frontend = compile_smithy_frontend(assembled, target=target, working_directory=working_directory)
+    client = frontend.client
     if smithy_sources and any(operation.generate_model for operation in client.operations):
-        model_schema = smithy_to_json_schema(
-            assembled,
-            service_id=client.service_id,
-            response_shapes=client.response_shapes,
-            working_directory=smithy_sources[0].parent,
-        )
-    warnings = (*import_warnings, *smithy.errors)
+        model_schema = frontend.model_schema
+    warnings = import_warnings
     return BuildInputs(
         model_schema=model_schema,
         model_input_type=model_input_type,

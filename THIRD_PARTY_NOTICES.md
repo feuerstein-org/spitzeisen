@@ -13,8 +13,9 @@ Apache-2.0 license. Its artifact and transitive dependencies are resolved by Cou
 their own package metadata and licenses.
 
 Native Smithy model generation uses the official `smithy-jsonschema` library at the same pinned
-version through a minimal source launcher. The library is provided under Smithy's Apache-2.0
-license and is resolved by Coursier rather than vendored.
+version through Spitzeisen's Smithy Build plugin. The library is provided under Smithy's Apache-2.0
+license and is resolved by Coursier rather than vendored. The bundled plugin JAR contains only
+Spitzeisen's own compiled code and Smithy trait definitions; it is not a fat JAR of dependencies.
 
 Python packages used as runtime, development, and optional code-generation dependencies retain
 their own package metadata and licenses; their resolved versions are recorded in `uv.lock`.
