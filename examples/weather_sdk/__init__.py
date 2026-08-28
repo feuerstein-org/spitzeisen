@@ -1,4 +1,8 @@
-"""Public exports for the generated example weather SDK."""
+"""
+Public exports for the Openweathermap SDK.
+
+Created once by spitzeisen-gen and safe to customize.
+"""
 
 from weather_sdk._async.client import AsyncWeatherApi
 from weather_sdk._sync.client import SyncWeatherApi

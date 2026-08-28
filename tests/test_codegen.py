@@ -347,6 +347,18 @@ def test_model_exports_promote_response_extensions_and_nested_schema_types(spec:
     ast.parse(module.source)
 
 
+def test_package_facade_exports_clients_and_generated_response_models(spec: dict[str, Any]) -> None:
+    """A fresh SDK package has the ergonomic root imports used by its examples."""
+    package = render(spec)["__init__.py"]
+
+    assert "from example_api._async.client import AsyncExampleApi" in package
+    assert "from example_api._sync.client import SyncExampleApi" in package
+    assert "from example_api.models import Split" in package
+    assert '__all__ = (\n    "AsyncExampleApi",\n    "Split",\n    "SyncExampleApi",\n)' in package
+    assert "Created once by spitzeisen-gen and safe to customize." in package
+    ast.parse(package)
+
+
 def test_prune_spec_uses_the_compiled_client_plan(spec: dict[str, Any]) -> None:
     """Model pruning follows the operations selected during policy compilation."""
     pruned = prune_spec(spec, compile_test_client(spec))
@@ -524,6 +536,7 @@ def test_generated_modules_parse(spec: dict[str, Any]) -> None:
 def test_both_surfaces_are_generated(spec: dict[str, Any]) -> None:
     """One entry yields regenerated bases plus create-once public extension modules."""
     assert set(render(spec)) == {
+        "__init__.py",
         "_async/_generated/__init__.py",
         "_async/_generated/splits.py",
         "_async/__init__.py",
@@ -608,6 +621,7 @@ def test_only_public_extension_modules_are_create_once(spec: dict[str, Any]) -> 
 
     create_once = {module.path.relative_to(package_root).as_posix() for module in modules if module.create_once}
     assert create_once == {
+        "__init__.py",
         "_async/__init__.py",
         "_async/splits.py",
         "_async/client.py",

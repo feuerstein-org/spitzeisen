@@ -15,6 +15,7 @@ split, so adding an operation refreshes the wiring without erasing hand-written 
 from __future__ import annotations
 
 import ast
+import json
 import keyword
 import subprocess
 import textwrap
@@ -51,9 +52,15 @@ class GeneratedModule:
     create_once: bool = False
 
 
-def formatted_module(path: Path, source: str, *, create_once: bool = False) -> GeneratedModule:
+def formatted_module(
+    path: Path,
+    source: str,
+    *,
+    package: str,
+    create_once: bool = False,
+) -> GeneratedModule:
     """Build one module, formatting it with its real destination for import classification."""
-    return GeneratedModule(path, format_python(source, str(path)), create_once=create_once)
+    return GeneratedModule(path, format_python(source, str(path), package=package), create_once=create_once)
 
 
 def prune_spec(spec: dict[str, Any], client: ClientPlan) -> dict[str, Any]:
@@ -65,10 +72,29 @@ def prune_spec(spec: dict[str, Any], client: ClientPlan) -> dict[str, Any]:
     }
 
 
-def format_python(source: str, filename: str = "generated.py") -> str:
+def format_python(source: str, filename: str = "generated.py", *, package: str | None = None) -> str:
     """Run generated source through ruff, exactly as the rest of the tree is formatted."""
+    import_config = (
+        [
+            "--config",
+            f"lint.isort.known-first-party={json.dumps([package, 'spitzeisen'])}",
+        ]
+        if package is not None
+        else []
+    )
     for argv in (
-        ["ruff", "check", "--select", "I,F401", "--fix", "--quiet", "--stdin-filename", filename, "-"],
+        [
+            "ruff",
+            "check",
+            "--select",
+            "I,F401",
+            "--fix",
+            "--quiet",
+            "--stdin-filename",
+            filename,
+            *import_config,
+            "-",
+        ],
         ["ruff", "format", "--quiet", "--stdin-filename", filename, "-"],
     ):
         result = subprocess.run(argv, input=source, capture_output=True, text=True, check=False)  # noqa: S603
@@ -195,6 +221,27 @@ def render_public_client(client: ClientPlan, *, is_async: bool) -> str:
     )
 
 
+def render_public_package(client: ClientPlan) -> str:
+    """Render the create-once package facade for clients and generated response models."""
+    model_names = sorted({operation.model for operation in client.operations if operation.generate_model})
+    exported_names = sorted(
+        {
+            f"Async{client.client_name}",
+            f"Sync{client.client_name}",
+            *model_names,
+        },
+    )
+    return (
+        environment()
+        .get_template("package_public.py.jinja")
+        .render(
+            client=client,
+            model_names=model_names,
+            exported_names=exported_names,
+        )
+    )
+
+
 def render_public_model(package: str, operation: OperationPlan) -> str:
     """Render one create-once public response-model subclass."""
     return (
@@ -240,6 +287,7 @@ def model_exports_module(client: ClientPlan, package_root: Path, model_source: s
     return formatted_module(
         package_root / "models" / "_exports.py",
         render_model_exports(client, generated_model_names(model_source)),
+        package=client.package,
     )
 
 
@@ -253,6 +301,7 @@ def model_extension_modules(client: ClientPlan, package_root: Path) -> list[Gene
                 '"""Public schema models and client-owned param types."""\n\n'
                 f"from {package}.models._exports import *  # noqa: F403\n"
             ),
+            package=package,
             create_once=True,
         ),
     ]
@@ -260,6 +309,7 @@ def model_extension_modules(client: ClientPlan, package_root: Path) -> list[Gene
         formatted_module(
             package_root / "models" / f"{operation.key}.py",
             render_public_model(package, operation),
+            package=package,
             create_once=True,
         )
         for operation in client.operations
@@ -270,7 +320,14 @@ def model_extension_modules(client: ClientPlan, package_root: Path) -> list[Gene
 
 def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModule]:
     """Render every operation and extension module from a compiled plan."""
-    modules: list[GeneratedModule] = []
+    modules = [
+        formatted_module(
+            package_root / "__init__.py",
+            render_public_package(client),
+            package=client.package,
+            create_once=True,
+        ),
+    ]
     for is_async in (True, False):
         folder = "_async" if is_async else "_sync"
         label = "Asynchronous" if is_async else "Synchronous"
@@ -279,10 +336,12 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
                 formatted_module(
                     package_root / folder / "_generated" / "__init__.py",
                     f'"""{label} generated implementation, do not edit."""\n',
+                    package=client.package,
                 ),
                 formatted_module(
                     package_root / folder / "__init__.py",
                     f'"""{label} API surface."""\n',
+                    package=client.package,
                     create_once=True,
                 ),
             ),
@@ -296,6 +355,7 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
                 formatted_module(
                     generated_path,
                     render_operation(client, operation, is_async=is_async),
+                    package=client.package,
                 ),
             )
             public_path = package_root / folder / f"{operation.key}.py"
@@ -303,6 +363,7 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
                 formatted_module(
                     public_path,
                     render_public_operation(client, operation, is_async=is_async),
+                    package=client.package,
                     create_once=True,
                 ),
             )
@@ -316,10 +377,12 @@ def generate_plan(client: ClientPlan, package_root: Path) -> list[GeneratedModul
                 formatted_module(
                     package_root / folder / "_generated" / "client.py",
                     render_client(client, is_async=is_async),
+                    package=client.package,
                 ),
                 formatted_module(
                     package_root / folder / "client.py",
                     render_public_client(client, is_async=is_async),
+                    package=client.package,
                     create_once=True,
                 ),
             ),

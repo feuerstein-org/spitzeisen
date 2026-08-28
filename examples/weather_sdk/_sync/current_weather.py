@@ -6,4 +6,4 @@ from weather_sdk._sync._generated.current_weather import SyncCurrentWeatherApiBa
 
 
 class SyncCurrentWeatherApi(SyncCurrentWeatherApiBase):
-    """Fetch the current weather observation for one location."""
+    """Returns the current weather observation for one latitude and longitude."""

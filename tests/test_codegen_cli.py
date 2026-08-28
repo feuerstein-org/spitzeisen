@@ -129,9 +129,13 @@ def test_cli_exposes_one_generation_transaction_and_one_drift_check(tmp_path: Pa
     assert "\n  models " not in help_result.output
     assert "\n  operations " not in help_result.output
     assert generated.exit_code == 0, generated.output
-    assert "generated 13 files" in generated.output
+    assert "generated 14 files" in generated.output
     assert checked.exit_code == 0, checked.output
-    assert "13 generated or scaffolded modules are up to date" in checked.output
+    assert "14 generated or scaffolded modules are up to date" in checked.output
+    package_source = (package_root / "__init__.py").read_text()
+    assert "from example_sdk._async.client import AsyncExampleApi" in package_source
+    assert "from example_sdk._sync.client import SyncExampleApi" in package_source
+    assert "from example_sdk.models import Thing" not in package_source
 
 
 def test_import_command_writes_an_inspectable_smithy_json_ast(tmp_path: Path) -> None:
@@ -211,7 +215,11 @@ def test_cli_generates_pydantic_models_from_native_smithy(
 
     sys.path.insert(0, str(tmp_path))
     try:
+        generated_package = importlib.import_module("native_weather_sdk")
         generated_models = importlib.import_module("native_weather_sdk.models")
+        assert generated_package.AsyncNativeWeatherApi.__name__ == "AsyncNativeWeatherApi"
+        assert generated_package.SyncNativeWeatherApi.__name__ == "SyncNativeWeatherApi"
+        assert generated_package.Weather is generated_models.Weather
         weather = generated_models.Weather.model_validate({"temperature": 20, "futureField": True})
         assert weather.temperature == 20
         assert not hasattr(weather, "futureField")

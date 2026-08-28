@@ -148,7 +148,9 @@ non-GET operations and request bodies currently fail with explicit errors.
 : Compiles a selected Smithy service into the renderer-ready plan.
 
 `codegen/generate.py` and `codegen/templates/`
-: Render regenerated async/sync bases and create-once public extension modules.
+: Render regenerated async/sync bases, a create-once package-root export facade, and create-once
+  public extension modules. A completely empty output directory therefore becomes an importable
+  SDK package in one generation transaction.
 
 `codegen/cli.py`
 : Coordinates transactional generation, inspectable imports, atomic writes, drift checks, pruning

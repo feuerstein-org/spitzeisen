@@ -6,4 +6,4 @@ from weather_sdk._async._generated.current_weather import AsyncCurrentWeatherApi
 
 
 class AsyncCurrentWeatherApi(AsyncCurrentWeatherApiBase):
-    """Fetch the current weather observation for one location."""
+    """Returns the current weather observation for one latitude and longitude."""

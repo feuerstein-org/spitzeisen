@@ -12,6 +12,7 @@ spec/weather.smithy              reviewed Smithy trait overlay
 spec/native-weather.smithy       standalone Smithy-first model used by the native codegen spike
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
+weather_sdk/__init__.py          create-once root client/model export facade
 weather_sdk/models/current_weather.py create-once public model with a custom validator
 weather_sdk/*/_generated/*.py    regenerated operation and aggregate-client bases
 weather_sdk/_async/*.py          create-once public async extension classes
@@ -35,11 +36,14 @@ operation surfaces in one transaction. No intermediate is kept as a second sourc
 `mise run import-openapi` to write that intermediate under `spec/generated/` when it is useful to
 inspect.
 
-Files named or nested under `_generated` are replaced on every run. Public model, operation, and
-client modules are created only when absent, so adding custom SDK behaviour there is safe.
-`models/current_weather.py` demonstrates this with a validator requiring a successful observation
-to contain at least one weather condition. The check task verifies generated models, replaceable
-operation/client bases, public exports, and the presence of every public extension module.
+Files named or nested under `_generated` are replaced on every run. The root package facade and
+public model, operation, and client modules are created only when absent, so adding custom SDK
+exports or behaviour there is safe. Starting with no `weather_sdk` directory recreates the entire
+importable package, including `weather_sdk/__init__.py`. After that initial scaffold,
+`models/current_weather.py` demonstrates customization with a validator requiring a successful
+observation to contain at least one weather condition. The check task verifies generated models,
+replaceable operation/client bases, public exports, and the presence of every public extension
+module.
 
 Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
 remain wire-only, and unknown response members are ignored for forward compatibility.
