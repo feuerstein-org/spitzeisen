@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from spitzeisen.codegen.diagnostics import ModelImportWarning
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.parser.errors import ParseError
 
 SMITHY_TRANSLATE_VERSION = "0.7.8"
 SMITHY_TRANSLATE_COORDINATE = f"com.disneystreaming.smithy:smithytranslate-cli_2.13:{SMITHY_TRANSLATE_VERSION}"
@@ -53,7 +53,7 @@ class ImportedSmithy:
     """A converted Smithy JSON AST plus non-fatal converter diagnostics."""
 
     model: dict[str, Any]
-    warnings: tuple[ParseError, ...]
+    warnings: tuple[ModelImportWarning, ...]
 
 
 def _converter_command() -> list[str]:
@@ -156,14 +156,14 @@ def project_openapi_for_converter(spec: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
-def _diagnostics(output: str) -> tuple[ParseError, ...]:
+def _diagnostics(output: str) -> tuple[ModelImportWarning, ...]:
     """Turn converter messages into concise codegen warnings."""
     lines = [
         line.strip()
         for line in output.splitlines()
         if line.strip() and not line.startswith("Writing ") and line.strip() not in _IGNORED_DIAGNOSTICS
     ]
-    return tuple(ParseError(header="smithy-translate warning", detail=line) for line in lines)
+    return tuple(ModelImportWarning(header="smithy-translate warning", detail=line) for line in lines)
 
 
 def import_openapi(spec: dict[str, Any], *, working_directory: Path | None = None) -> ImportedSmithy:

@@ -12,12 +12,11 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from spitzeisen.codegen.assembly import assemble_smithy
+from spitzeisen.codegen.diagnostics import ModelImportWarning
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.java_frontend import compile_smithy_frontend
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.parser import ParsedSmithy
-from spitzeisen.codegen.parser.errors import ParseError
-from spitzeisen.codegen.policy import ClientPlan, TargetSettings
+from spitzeisen.codegen.plan import ClientPlan, TargetSettings
 
 type ModelInputType = Literal["openapi", "jsonschema"]
 
@@ -30,7 +29,7 @@ class BuildInputs:
     model_input_type: ModelInputType
     smithy: dict[str, Any]
     client: ClientPlan
-    warnings: tuple[ParseError, ...]
+    warnings: tuple[ModelImportWarning, ...]
 
 
 def load_mapping(data: bytes, content_type: str | None) -> dict[str, Any]:
@@ -81,14 +80,6 @@ def load_document(*, source: str | Path, timeout: int) -> dict[str, Any]:
             ) from err
         content_type = mimetypes.guess_type(source.absolute().as_uri(), strict=True)[0]
     return load_mapping(data, content_type)
-
-
-def parse_smithy(model: dict[str, Any]) -> ParsedSmithy:
-    """Parse a Smithy JSON AST and add input-facing context to failures."""
-    try:
-        return ParsedSmithy.from_dict(model)
-    except (TypeError, ValueError) as err:
-        raise CodegenError(header="Failed to parse imported Smithy model", detail=str(err)) from err
 
 
 def load_compile_inputs(

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 if TYPE_CHECKING:
-    from spitzeisen.codegen.policy import ClientPlan, OperationPlan, ParamPlan
+    from spitzeisen.codegen.plan import ClientPlan, OperationPlan, ParamPlan
 
 TEMPLATES = Path(__file__).parent / "templates"
 

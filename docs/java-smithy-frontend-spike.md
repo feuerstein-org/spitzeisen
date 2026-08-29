@@ -35,26 +35,24 @@ second user-authored manifest.
 
 ## Production verification
 
-`mise run smithy-java-spike` performs three end-to-end comparisons against the retired Python
-compiler.
+`mise run smithy-java-spike` performs three end-to-end production checks.
 
 For native Smithy it:
 
 1. runs the plugin through a standard Smithy Build projection;
-2. compares the Java `ClientPlan` with the current Python frontend;
-3. compares the official `smithy-jsonschema` result;
-4. generates the Pydantic models and all Python SDK modules;
-5. verifies all 17 modules are byte-for-byte identical; and
-6. imports the SDK and validates a response with its generated Pydantic model.
+2. runs the packaged launcher against the same native source;
+3. compares both the versioned `ClientPlan` and official `smithy-jsonschema` result;
+4. generates the Pydantic models and all Python SDK modules; and
+5. imports the SDK and validates a response with its generated Pydantic model.
 
 For the weather OpenAPI fixture it:
 
 1. performs the existing bounded OpenAPI-to-Smithy import and applies the Smithy overlay;
-2. runs that assembled model through the Java plugin;
-3. compares the complete operation plan, including required kwargs, friendly parameter names,
+2. runs the assembled model through direct Smithy Build and the packaged launcher;
+3. compares their complete operation plans, including required kwargs, friendly parameter names,
    defaults, documentation, and hidden inputs;
 4. retains the original OpenAPI document as the Pydantic backend input; and
-5. verifies all 17 generated modules are byte-for-byte identical and importable.
+5. renders and imports the generated SDK.
 
 The original OpenAPI schema remains authoritative for Pydantic generation because Smithy
 translation can discard JSON Schema details. Java owns service and operation semantics in this path,
@@ -97,6 +95,7 @@ temporary Smithy Build projection, launches the packaged plugin with Smithy 1.72
 The artifacts disappear with the transaction. Python only deserializes the versioned plan and
 renders the established kwargs-based SDK.
 
-The old Python JSON-AST parser/compiler remains outside the production path as an equivalence oracle
-while this migration branch is evaluated. The standalone Python-to-Java JSON Schema bridge was
-deleted because the production plugin now owns that official conversion directly.
+The old Python JSON-AST parser, intermediate representation, trait reader, policy compiler, and
+standalone Python-to-Java JSON Schema bridge were deleted. Semantic behavior is covered where it is
+implemented: JUnit exercises the semantic compiler and its validation failures, while Python tests
+consume fixed versioned plans to exercise rendering without reconstructing Smithy policy.

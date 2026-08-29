@@ -44,6 +44,47 @@ final class ClientPlanCompilerTest {
         assertTrue(plugins.stream().anyMatch(provider -> provider.type().equals(SpitzeisenPythonClientCodegenPlugin.class)));
     }
 
+    @Test
+    void compilesTheCompleteCustomPolicySurface() throws IOException, URISyntaxException {
+        var model = Model.assembler()
+                .discoverModels()
+                .addImport(resource("/policy-features.smithy"))
+                .assemble()
+                .unwrap();
+        var settings = SpitzeisenSettings.fromNode(Node.parse("""
+                {
+                    "service": "policy.example#ExampleService",
+                    "package": "policy_sdk",
+                    "clientName": "PolicyApi"
+                }
+                """).expectObjectNode());
+
+        var client = new ClientPlanCompiler(model, settings).compile().node().expectObjectMember("client");
+        var operation = client.expectArrayMember("operations").getElements().get(0).expectObjectNode();
+        var parameters = operation.expectArrayMember("params").getElements().stream()
+                .map(Node::expectObjectNode)
+                .collect(java.util.stream.Collectors.toMap(
+                        node -> node.expectStringMember("name").getValue(),
+                        node -> node
+                ));
+
+        assertEquals("page_number", operation.expectStringMember("pagination").getValue());
+        assertEquals(0, operation.expectNumberMember("page_start").getValue().intValue());
+        assertEquals(2, operation.expectNumberMember("page_step").getValue().intValue());
+        assertEquals(500, operation.expectObjectMember("page_size").expectNumberMember("maximum")
+                .getValue().intValue());
+        assertEquals("suffix", operation.expectObjectMember("sorting").expectStringMember("style").getValue());
+        assertEquals("list[str]", parameters.get("filters").expectStringMember("annotation").getValue());
+        assertTrue(parameters.get("since").expectStringMember("coercion").getValue().startsWith("coerce_date("));
+        assertEquals("'en'", parameters.get("language").expectStringMember("client_default").getValue());
+        assertEquals("header", parameters.get("X_Workspace").expectStringMember("location").getValue());
+        assertTrue(parameters.get("X_Workspace").expectMember("client_default").isNullNode());
+        assertEquals("display_name", client.expectObjectMember("model_aliases")
+                .expectStringMember("Record.displayName").getValue());
+        assertEquals("str", client.expectObjectMember("model_type_overrides")
+                .expectStringMember("Record.displayName").getValue());
+    }
+
     private static java.net.URL resource(String name) {
         var resource = ClientPlanCompilerTest.class.getResource(name);
         if (resource == null) {

@@ -29,12 +29,12 @@ from spitzeisen.codegen.generate import (
 )
 from spitzeisen.codegen.inputs import load_compile_inputs, load_document
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.policy import TargetSettings
+from spitzeisen.codegen.plan import TargetSettings
 
 if TYPE_CHECKING:
+    from spitzeisen.codegen.diagnostics import ModelImportWarning
     from spitzeisen.codegen.inputs import ModelInputType
-    from spitzeisen.codegen.parser.errors import ParseError
-    from spitzeisen.codegen.policy import ClientPlan
+    from spitzeisen.codegen.plan import ClientPlan
 
 DEFAULT_MODEL_BASE_CLASS = "spitzeisen.SpitzeisenModel"
 DEFAULT_HTTP_TIMEOUT = 5
@@ -62,10 +62,10 @@ class Config:
 
 @dataclass(frozen=True, slots=True)
 class RenderResult:
-    """Rendered modules and non-fatal parser warnings."""
+    """Rendered modules and non-fatal model-import warnings."""
 
     modules: list[GeneratedModule]
-    warnings: tuple[ParseError, ...]
+    warnings: tuple[ModelImportWarning, ...]
 
 
 main = typer.Typer(name="spitzeisen-gen", no_args_is_help=True)
@@ -144,8 +144,8 @@ def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
     )
 
 
-def _print_parser_warning(err: ParseError) -> None:
-    """Print one recoverable parser warning."""
+def _print_import_warning(err: ModelImportWarning) -> None:
+    """Print one recoverable model-import warning."""
     color = typer.colors.YELLOW
     typer.secho(err.header, bold=True, fg=color, err=True)
     typer.echo(err=True)
@@ -157,15 +157,15 @@ def _print_parser_warning(err: ParseError) -> None:
     typer.echo(err=True)
 
 
-def handle_warnings(warnings: Sequence[ParseError], fail_on_warning: bool = False) -> None:
-    """Render recoverable parser warnings and optionally fail the command."""
+def handle_warnings(warnings: Sequence[ModelImportWarning], fail_on_warning: bool = False) -> None:
+    """Render recoverable model-import warnings and optionally fail the command."""
     if not warnings:
         return
     message = "Warning(s) encountered while generating. Client was generated, but some pieces may be missing"
     typer.secho(message, underline=True, bold=True, fg=typer.colors.BRIGHT_YELLOW, err=True)
     typer.echo(err=True)
     for warning in warnings:
-        _print_parser_warning(warning)
+        _print_import_warning(warning)
     _print_issue_link()
     if fail_on_warning:
         raise typer.Exit(code=1)
@@ -236,7 +236,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
     http_timeout: int = typer.Option(DEFAULT_HTTP_TIMEOUT, min=1, help="OpenAPI URL timeout in seconds"),
-    fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when parser warnings occur"),
+    fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when model-import warnings occur"),
 ) -> None:
     """Generate models and the async/sync SDK surfaces in one pass."""
     config = _process_config(
@@ -282,7 +282,7 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
     http_timeout: int = typer.Option(DEFAULT_HTTP_TIMEOUT, min=1, help="OpenAPI URL timeout in seconds"),
-    fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when parser warnings occur"),
+    fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when model-import warnings occur"),
 ) -> None:
     """Fail when committed generated output differs from clean generation."""
     config = _process_config(

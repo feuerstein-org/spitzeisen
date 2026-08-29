@@ -116,9 +116,9 @@ ranges, and names. The plugin reads Spitzeisen's custom traits and emits a versi
 
 `codegen/java_frontend.py` runs the bundled plugin JAR with pinned Smithy dependencies and loads both
 artifacts transactionally. Python never reparses the Smithy JSON AST during production generation.
-The former Python parser and compiler remain temporarily as a test-only equivalence oracle; native
-Smithy, the real weather OpenAPI fixture, and a policy-complete fixture must match before changes to
-the Java frontend land. See [`java-smithy-frontend-spike.md`](java-smithy-frontend-spike.md).
+Native Smithy, the real weather OpenAPI fixture, and a policy-complete fixture exercise this boundary
+through direct Smithy Build and the packaged CLI launcher. See
+[`java-smithy-frontend-spike.md`](java-smithy-frontend-spike.md).
 
 Spitzeisen currently implements a constrained generic HTTP/JSON profile rather than claiming that
 arbitrary vendor APIs use AWS `restJson1`. Query collections use the profile default unless an
@@ -144,9 +144,9 @@ non-GET operations and request bodies currently fail with explicit errors.
 : Owns semantic Smithy compilation and official native JSON Schema projection in Java. Gradle builds
   a reproducible JAR and `mise run install-codegen-frontend` installs it into the Python package.
 
-`codegen/parser/smithy.py`, `codegen/traits.py`, and the compiler in `codegen/policy.py`
-: Retained only as the migration equivalence oracle and renderer-plan data contract; they are not on
-  the production input path.
+`codegen/plan.py` and `codegen/plan_io.py`
+: Define and validate the small versioned renderer contract emitted by Java. They contain no Smithy
+  parsing or policy compilation.
 
 `codegen/generate.py` and `codegen/templates/`
 : Render regenerated async/sync bases, a create-once package-root export facade, and create-once

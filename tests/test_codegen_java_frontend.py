@@ -8,21 +8,26 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from smithy_fixtures import native_weather_model
+from plan_fixtures import native_weather_client
 
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.inputs import parse_smithy
 from spitzeisen.codegen.java_frontend import PLUGIN_NAME, FrontendResult, compile_smithy_frontend
+from spitzeisen.codegen.plan import TargetSettings
 from spitzeisen.codegen.plan_io import client_plan_document
-from spitzeisen.codegen.policy import TargetSettings, compile_model
 
 
 def _expected() -> FrontendResult:
-    client = compile_model(
-        TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
-        parse_smithy(native_weather_model()),
+    return FrontendResult(
+        client=native_weather_client(),
+        model_schema={"$defs": {"Weather": {"type": "object"}}},
     )
-    return FrontendResult(client=client, model_schema={"$defs": {"Weather": {"type": "object"}}})
+
+
+def _model() -> dict[str, Any]:
+    return {
+        "smithy": "2.0",
+        "shapes": {"native.weather#WeatherService": {"type": "service"}},
+    }
 
 
 def test_frontend_runs_smithy_build_and_loads_versioned_artifacts(
@@ -54,7 +59,7 @@ def test_frontend_runs_smithy_build_and_loads_versioned_artifacts(
     monkeypatch.setattr("spitzeisen.codegen.java_frontend.subprocess.run", run)
 
     actual = compile_smithy_frontend(
-        native_weather_model(),
+        _model(),
         target=TargetSettings(
             package="native_weather_sdk",
             client_name="NativeWeatherApi",
@@ -82,7 +87,7 @@ def test_frontend_reports_smithy_build_errors(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(CodegenError, match="invalid trait"):
         compile_smithy_frontend(
-            native_weather_model(),
+            _model(),
             target=TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
         )
 
@@ -93,7 +98,7 @@ def test_frontend_rejects_an_unknown_service_name(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(CodegenError, match=r"absent or ambiguous.*WeatherService"):
         compile_smithy_frontend(
-            native_weather_model(),
+            _model(),
             target=TargetSettings(
                 package="native_weather_sdk",
                 client_name="NativeWeatherApi",
