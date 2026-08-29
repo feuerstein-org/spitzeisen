@@ -7,25 +7,23 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from plan_fixtures import native_weather_client, things_client
 from pydantic import ValidationError
-from smithy_fixtures import native_weather_model, smithy_model
 from typer.testing import CliRunner
 
 from spitzeisen.codegen.cli import main
-from spitzeisen.codegen.inputs import parse_smithy
 from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import ImportedSmithy
-from spitzeisen.codegen.policy import TargetSettings, compile_model
-from spitzeisen.codegen.traits import PYTHON_PARAMETER, SDK_OPERATION, model_customizations
+from spitzeisen.codegen.plan import TargetSettings
 
 
 @pytest.fixture(autouse=True)
 def converted_smithy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep CLI transaction tests offline while crossing the real Smithy parser boundary."""
+    """Keep CLI transaction tests offline while preserving the production process boundary."""
 
     def convert(spec: dict[str, Any], *, working_directory: Path | None = None) -> ImportedSmithy:
-        del working_directory
-        return ImportedSmithy(model=smithy_model(spec), warnings=())
+        del spec, working_directory
+        return ImportedSmithy(model={"smithy": "2.0", "shapes": {}}, warnings=())
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.import_openapi", convert)
     monkeypatch.setattr("spitzeisen.codegen.cli.import_openapi", convert)
@@ -37,17 +35,6 @@ def converted_smithy(monkeypatch: pytest.MonkeyPatch) -> None:
         working_directory: Path | None = None,
     ) -> dict[str, Any]:
         del overlays, working_directory
-        operation = next(shape for shape in imported["shapes"].values() if shape.get("type") == "operation")
-        operation["traits"][SDK_OPERATION] = {
-            "name": "things",
-            "methodName": "get_things",
-            "responseModel": "Thing",
-            "generateModel": False,
-            "shape": "collection",
-        }
-        input_shape = imported["shapes"][operation["input"]["target"]]
-        input_shape["members"]["category"]["traits"][PYTHON_PARAMETER] = {}
-        input_shape["members"]["category"]["traits"]["smithy.api#documentation"] = "Category to return."
         return imported
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
@@ -59,9 +46,9 @@ def converted_smithy(monkeypatch: pytest.MonkeyPatch) -> None:
         target: TargetSettings,
         working_directory: Path | None,
     ) -> FrontendResult:
-        del working_directory
+        del assembled, working_directory
         return FrontendResult(
-            client=compile_model(target, parse_smithy(assembled), model_customizations(assembled)),
+            client=things_client(package=target.package, client_name=target.client_name),
             model_schema={},
         )
 
@@ -177,8 +164,8 @@ def test_cli_generates_pydantic_models_from_native_smithy(
     source = tmp_path / "weather.smithy"
     source.write_text('$version: "2"\nnamespace native.weather\n')
     package_root = tmp_path / "native_weather_sdk"
-    model = native_weather_model()
-    schema = {
+    model: dict[str, Any] = {"smithy": "2.0", "shapes": {}}
+    schema: dict[str, Any] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
             "Weather": {
@@ -206,9 +193,10 @@ def test_cli_generates_pydantic_models_from_native_smithy(
         target: TargetSettings,
         working_directory: Path | None,
     ) -> FrontendResult:
+        del assembled, target
         assert working_directory == tmp_path
         return FrontendResult(
-            client=compile_model(target, parse_smithy(assembled)),
+            client=native_weather_client(),
             model_schema=schema,
         )
 

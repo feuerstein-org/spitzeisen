@@ -43,12 +43,12 @@ depends = ["codegen"]
 run = "uv run python examples/demo.py"
 
 [tasks.smithy-java-spike]
-description = "Run the complete Java Smithy frontend equivalence suite"
+description = "Run the complete Java Smithy frontend verification suite"
 run = [
     "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:build :spitzeisen-smithy-codegen:installRuntimeJar :spitzeisen-smithy-codegen-test:smithyBuild",
     "uv run --locked spitzeisen-gen import-openapi --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --output-path codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
     "cs launch software.amazon.smithy:smithy-cli:1.72.0 software.amazon.smithy:smithy-jsonschema:1.72.0 --extra-jars codegen/spitzeisen-smithy-codegen/build/libs/spitzeisen-codegen.jar -- build --quiet --config codegen/spitzeisen-smithy-codegen-test/openapi-smithy-build.json --output codegen/spitzeisen-smithy-codegen-test/build/openapi-smithy codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
-    "uv run --locked python codegen/verify_spike.py",
+    "uv run --locked python codegen/verify_frontend.py",
 ]
 
 [tasks.pre-commit]

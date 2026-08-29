@@ -28,15 +28,15 @@ Build and copy the reproducible runtime JAR into the Python package:
 mise run install-codegen-frontend
 ```
 
-Run the complete cross-frontend verification from the repository root:
+Run the complete frontend verification from the repository root:
 
 ```console
 mise run smithy-java-spike
 ```
 
 That task checks native Smithy, the real weather OpenAPI fixture, and a policy-complete Smithy
-fixture. It compares the Java plan against the retired Python compiler, renders all Python and
-Pydantic modules, checks byte equality, and imports the generated package.
+fixture through both direct Smithy Build and the packaged launcher. It renders Python and Pydantic
+modules and imports the generated packages.
 
 The Python CLI launches this plugin through pinned Smithy Build coordinates and deserializes its
 versioned plan. The generated JSON plan is an internal temporary artifact, not a user-maintained

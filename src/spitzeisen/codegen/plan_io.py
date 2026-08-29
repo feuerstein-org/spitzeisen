@@ -4,18 +4,33 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from spitzeisen.codegen.policy import (
+from spitzeisen.codegen.plan import (
+    ActiveSortStyle,
     ClientPlan,
+    JSONValue,
+    NotFound,
     OperationPlan,
     PageSizePlan,
+    PaginationStyle,
     ParamPlan,
+    Shape,
     SortArgumentPlan,
     SortingPlan,
+    WireLocation,
 )
 
+if TYPE_CHECKING:
+    from spitzeisen.params import QueryStyle
+
 PLAN_SCHEMA_VERSION = 1
+SHAPES: tuple[Shape, ...] = ("collection", "single")
+NOT_FOUND_BEHAVIORS: tuple[NotFound, ...] = ("raise", "empty")
+PAGINATION_STYLES: tuple[PaginationStyle, ...] = ("none", "page_number")
+WIRE_LOCATIONS: tuple[WireLocation, ...] = ("query", "header")
+QUERY_STYLES: tuple[QueryStyle, ...] = ("form", "spaceDelimited", "pipeDelimited")
+SORT_STYLES: tuple[ActiveSortStyle, ...] = ("suffix", "param")
 
 
 def client_plan_document(client: ClientPlan) -> dict[str, Any]:
@@ -54,10 +69,10 @@ def _operation(raw: dict[str, Any]) -> OperationPlan:
         summary=_string(raw, "summary"),
         docs_url=_optional_string(raw, "docs_url"),
         generate_model=_boolean(raw, "generate_model"),
-        shape=cast("Any", _string(raw, "shape")),
-        not_found=cast("Any", _string(raw, "not_found")),
+        shape=_choice(raw, "shape", SHAPES),
+        not_found=_choice(raw, "not_found", NOT_FOUND_BEHAVIORS),
         cost=_number(raw, "cost"),
-        pagination=cast("Any", _string(raw, "pagination")),
+        pagination=_choice(raw, "pagination", PAGINATION_STYLES),
         results_key=_optional_string(raw, "results_key"),
         page_param=_optional_string(raw, "page_param"),
         page_start=_integer(raw, "page_start"),
@@ -82,8 +97,8 @@ def _param(raw: dict[str, Any]) -> ParamPlan:
         annotation=_string(raw, "annotation"),
         description=_string(raw, "description"),
         coercion=_string(raw, "coercion"),
-        location=cast("Any", _string(raw, "location")),
-        style=cast("Any", _string(raw, "style")),
+        location=_choice(raw, "location", WIRE_LOCATIONS),
+        style=_choice(raw, "style", QUERY_STYLES),
         explode=_boolean(raw, "explode"),
         required=_boolean(raw, "required"),
         client_default=_optional_string(raw, "client_default"),
@@ -95,7 +110,7 @@ def _sorting(value: object) -> SortingPlan | None:
         return None
     raw = _mapping(value, "sorting")
     return SortingPlan(
-        style=cast("Any", _string(raw, "style")),
+        style=_choice(raw, "style", SORT_STYLES),
         sort=_sort_argument(_mapping(raw.get("sort"), "sorting.sort")),
         order=_sort_argument(_mapping(raw.get("order"), "sorting.order")),
     )
@@ -105,9 +120,9 @@ def _sort_argument(raw: dict[str, Any]) -> SortArgumentPlan:
     return SortArgumentPlan(
         wire_name=_optional_string(raw, "wire_name"),
         annotation=_string(raw, "annotation"),
-        default=cast("Any", raw.get("default")),
+        default=_json_value(raw.get("default"), "sorting argument default"),
         coercion=_string(raw, "coercion"),
-        style=cast("Any", _string(raw, "style")),
+        style=_choice(raw, "style", QUERY_STYLES),
         explode=_boolean(raw, "explode"),
     )
 
@@ -122,6 +137,10 @@ def _page_size(value: object) -> PageSizePlan | None:
 def _mapping(value: object, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         msg = f"client-plan member {name!r} must be an object"
+        raise TypeError(msg)
+    mapping = cast("dict[object, object]", value)
+    if not all(isinstance(key, str) for key in mapping):
+        msg = f"client-plan member {name!r} must use string keys"
         raise TypeError(msg)
     return cast("dict[str, Any]", value)
 
@@ -140,6 +159,14 @@ def _string(values: dict[str, Any], name: str) -> str:
         msg = f"client-plan member {name!r} must be a string"
         raise TypeError(msg)
     return value
+
+
+def _choice[T: str](values: dict[str, Any], name: str, allowed: tuple[T, ...]) -> T:
+    value = _string(values, name)
+    if value not in allowed:
+        msg = f"client-plan member {name!r} must be one of {allowed}, got {value!r}"
+        raise ValueError(msg)
+    return cast("T", value)
 
 
 def _optional_string(values: dict[str, Any], name: str) -> str | None:
@@ -192,3 +219,15 @@ def _integer(values: dict[str, Any], name: str) -> int:
         msg = f"client-plan member {name!r} must be an integer"
         raise TypeError(msg)
     return value
+
+
+def _json_value(value: object, name: str) -> JSONValue:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [_json_value(item, name) for item in cast("list[object]", value)]
+    if isinstance(value, dict):
+        raw = _mapping(cast("dict[object, object]", value), name)
+        return {key: _json_value(item, name) for key, item in raw.items()}
+    msg = f"client-plan member {name!r} must be a JSON value"
+    raise TypeError(msg)

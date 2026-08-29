@@ -15,7 +15,7 @@ from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.plan_io import client_plan_from_document
 
 if TYPE_CHECKING:
-    from spitzeisen.codegen.policy import ClientPlan, TargetSettings
+    from spitzeisen.codegen.plan import ClientPlan, TargetSettings
 
 SMITHY_JSONSCHEMA_COORDINATE = f"software.amazon.smithy:smithy-jsonschema:{SMITHY_CLI_VERSION}"
 PLUGIN_NAME = "spitzeisen-python-client-codegen"
