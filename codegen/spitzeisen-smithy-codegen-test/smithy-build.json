@@ -18,10 +18,8 @@
         }
       ],
       "plugins": {
-        "spitzeisen-python-client-codegen": {
-          "service": "native.weather#WeatherService",
-          "package": "native_weather_sdk",
-          "clientName": "NativeWeatherApi"
+        "spitzeisen-service-plan": {
+          "service": "native.weather#WeatherService"
         }
       }
     },
@@ -38,10 +36,8 @@
         }
       ],
       "plugins": {
-        "spitzeisen-python-client-codegen": {
-          "service": "policy.example#ExampleService",
-          "package": "policy_sdk",
-          "clientName": "PolicyApi"
+        "spitzeisen-service-plan": {
+          "service": "policy.example#ExampleService"
         }
       }
     }

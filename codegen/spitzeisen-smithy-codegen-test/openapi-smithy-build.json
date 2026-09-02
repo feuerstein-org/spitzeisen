@@ -14,11 +14,8 @@
         }
       ],
       "plugins": {
-        "spitzeisen-python-client-codegen": {
-          "service": "openapi#OpenapiService",
-          "package": "weather_sdk",
-          "clientName": "WeatherApi",
-          "vendor": "openweathermap"
+        "spitzeisen-service-plan": {
+          "service": "openapi#OpenapiService"
         }
       }
     }

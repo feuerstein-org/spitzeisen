@@ -13,7 +13,7 @@ from weather_sdk.models._generated import (
     WeatherMeasurements,
     Wind,
 )
-from weather_sdk.models.current_weather import CurrentWeatherResponse
+from weather_sdk.models.current_weather_response import CurrentWeatherResponse
 
 __all__ = (
     "Clouds",

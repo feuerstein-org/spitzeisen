@@ -7,13 +7,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from plan_fixtures import native_weather_client, things_client
+from plan_fixtures import native_weather_service_plan, things_service_plan
 
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.inputs import load_compile_inputs, load_mapping
 from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import ImportedSmithy, project_openapi_for_converter
-from spitzeisen.codegen.plan import TargetSettings
 
 
 def openapi_document(*, version: str = "3.1.0", paths: dict[str, object] | None = None) -> dict[str, Any]:
@@ -93,24 +92,23 @@ def test_openapi_pipeline_passes_the_assembled_model_to_java(
     def compile_frontend(
         model: dict[str, Any],
         *,
-        target: TargetSettings,
+        service: str | None,
         working_directory: Path | None,
     ) -> FrontendResult:
         assert model is assembled
-        assert target.package == "example_sdk"
+        assert service is None
         assert working_directory == tmp_path
-        return FrontendResult(things_client(package="example_sdk", client_name="ExampleApi"), {})
+        return FrontendResult(things_service_plan(), {})
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
     inputs = load_compile_inputs(
         source=source,
         overlays=(overlay,),
-        target=TargetSettings(package="example_sdk", client_name="ExampleApi"),
         timeout=5,
     )
 
-    assert inputs.client.operations[0].method_name == "get_things"
+    assert inputs.service_plan.service.operations == ("example#GetThings",)
     assert inputs.model_input_type == "openapi"
     assert inputs.model_schema == spec
     assert inputs.smithy is assembled
@@ -137,18 +135,17 @@ def test_native_pipeline_uses_the_java_json_schema(
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
 
     def compile_frontend(*_args: object, **_kwargs: object) -> FrontendResult:
-        return FrontendResult(native_weather_client(), schema)
+        return FrontendResult(native_weather_service_plan(), schema)
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
     inputs = load_compile_inputs(
         smithy_sources=(source,),
         overlays=(overlay,),
-        target=TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
         timeout=5,
     )
 
     assert inputs.model_input_type == "jsonschema"
     assert inputs.model_schema == schema
-    assert inputs.client.operations[0].model == "Weather"
-    assert inputs.client.response_shapes == ("native.weather#Weather",)
+    assert inputs.service_plan.service.id == "native.weather#WeatherService"
+    assert inputs.service_plan.operation("native.weather#GetWeather").output == "native.weather#GetWeatherOutput"

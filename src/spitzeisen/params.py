@@ -5,15 +5,22 @@ Nothing here is API-specific: each helper takes the closed value set it should v
 against, so a client library keeps ownership of its own `Literal` types.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from email.utils import format_datetime
 from typing import Literal, cast, get_args
+from urllib.parse import quote
 
 from typing_extensions import TypeForm
 
 QueryStyle = Literal["form", "spaceDelimited", "pipeDelimited"]
+TimestampFormat = Literal["date-time", "http-date", "epoch-seconds"]
 _SUPPORTED_QUERY_STYLES = frozenset(get_args(QueryStyle))
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MILLISECONDS_PER_SECOND = 1000
+_MICROSECONDS_PER_MILLISECOND = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,26 +59,30 @@ def require_value[T](value: T | None, param_name: str) -> T:
     return value
 
 
-def coerce_choices[T: str](values: Sequence[T] | None, literal_type: TypeForm[T], param_name: str) -> str | None:
+def coerce_choices[T](
+    values: Collection[T] | None,
+    literal_type: TypeForm[T],
+    param_name: str,
+) -> Collection[T] | None:
     """
-    Validate a list of Literal members and join them into a comma-separated string.
+    Validate a collection of Literal members without choosing its wire encoding.
 
-    Used for multi-value filters such as `<field>.any_of=<val1>,<val2>`. Returns None for a None or empty
-    list. Raises ValueError (listing the allowed values) if any element is invalid.
+    Returns the input collection unchanged so ``serialize_query_param`` can independently
+    apply the modeled style and explode setting. None and empty collections become None.
     """
     if not values:
         return None
     allowed = cast("tuple[T, ...]", get_args(literal_type))
     invalid = [value for value in values if value not in allowed]
     if invalid:
-        joined = ", ".join(allowed)
+        joined = ", ".join(str(member) for member in allowed)
         msg = f"Invalid {param_name} {invalid!r}. Allowed values: {joined}."
         raise ValueError(msg)
-    return ",".join(values)
+    return values
 
 
 # TODO: Should this live here?
-def coerce_sort(sort: object, order: object) -> str:
+def coerce_sort(sort: object, order: object, *, separator: str = ".") -> str:
     """
     Combine an already-coerced field and direction into the `field.direction` form.
 
@@ -81,7 +92,7 @@ def coerce_sort(sort: object, order: object) -> str:
     if sort is None or sort == "" or order is None or order == "":
         msg = "order or sort were not provided."
         raise ValueError(msg)
-    return f"{sort}.{order}"
+    return f"{sort}{separator}{order}"
 
 
 def coerce_date(value: str | date | datetime | None, param_name: str) -> str | None:
@@ -104,22 +115,76 @@ def coerce_date(value: str | date | datetime | None, param_name: str) -> str | N
         raise ValueError(msg) from None
 
 
+def coerce_timestamp(
+    value: datetime | None,
+    timestamp_format: TimestampFormat,
+    param_name: str,
+) -> str | None:
+    """Serialize one timezone-aware datetime using an exact Smithy timestamp format."""
+    if value is None:
+        return None
+    value = _require_datetime(value, param_name)
+    if value.utcoffset() is None:
+        msg = f"Invalid {param_name} {value!r}. Smithy timestamps must include a timezone."
+        raise ValueError(msg)
+    utc_value = value.astimezone(UTC)
+    if timestamp_format == "date-time":
+        return utc_value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    if timestamp_format == "http-date":
+        return format_datetime(utc_value.replace(microsecond=0), usegmt=True)
+    if timestamp_format == "epoch-seconds":
+        delta = utc_value - _EPOCH
+        milliseconds = (
+            delta.days * 24 * 60 * 60 + delta.seconds
+        ) * _MILLISECONDS_PER_SECOND + delta.microseconds // _MICROSECONDS_PER_MILLISECOND
+        return str(Decimal(milliseconds) / Decimal(_MILLISECONDS_PER_SECOND))
+    msg = f"Unsupported Smithy timestamp format {timestamp_format!r}."
+    raise ValueError(msg)
+
+
+def _require_datetime(value: object, param_name: str) -> datetime:
+    if not isinstance(value, datetime):
+        msg = f"Invalid {param_name} {value!r}. Expected a datetime."
+        raise TypeError(msg)
+    return value
+
+
+def coerce_timestamps(
+    values: Collection[datetime] | None,
+    timestamp_format: TimestampFormat,
+    param_name: str,
+) -> Collection[str] | None:
+    """Serialize a collection of timestamps while leaving its wire style to the binding."""
+    if not values:
+        return None
+    return [
+        cast("str", coerce_timestamp(value, timestamp_format, f"{param_name}[{index}]"))
+        for index, value in enumerate(values)
+    ]
+
+
 def _stringify(value: object) -> str:
     """Turn one scalar into its query/header representation."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d")
+        msg = "datetime values require an explicit Smithy timestamp format"
+        raise TypeError(msg)
     if isinstance(value, date):
         return value.isoformat()
     return str(value)
 
 
 def _values(value: object) -> list[str]:
-    """Convert an arrays values into strings. E.g. True -> 'true' etc."""
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [_stringify(item) for item in cast("Sequence[object]", value)]
+    """Convert collection values into strings. E.g. True -> 'true' etc."""
+    if isinstance(value, Collection) and not isinstance(value, str | bytes | bytearray):
+        return [_stringify(item) for item in cast("Collection[object]", value)]
     return [_stringify(value)]
+
+
+def serialize_path_param(value: object, *, greedy: bool = False) -> str:
+    """Serialize one Smithy HTTP label, preserving slashes only for greedy labels."""
+    return quote(_stringify(value), safe="/" if greedy else "")
 
 
 def serialize_query_param(
@@ -219,4 +284,4 @@ def _serialize_object(
 
 def build_header_params(raw: Mapping[str, object]) -> dict[str, str]:
     """Build header values, where every param has exactly one name/value pair."""
-    return {key: _stringify(value) for key, value in raw.items() if value is not None}
+    return {key: ",".join(_values(value)) for key, value in raw.items() if value is not None}

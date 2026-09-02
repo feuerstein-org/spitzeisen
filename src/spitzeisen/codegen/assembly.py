@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Any, cast
 
 from spitzeisen.codegen.exceptions import CodegenError
+from spitzeisen.codegen.toolchain import SMITHY_VERSION
 
-SMITHY_CLI_VERSION = "1.72.0"
+SMITHY_CLI_VERSION = SMITHY_VERSION
 SMITHY_CLI_COORDINATE = f"software.amazon.smithy:smithy-cli:{SMITHY_CLI_VERSION}"
-TRAIT_DEFINITIONS = Path(__file__).with_name("smithy") / "spitzeisen.smithy"
+TRAIT_BUNDLE = Path(__file__).with_name("smithy") / "spitzeisen-service-plan.jar"
 
 
 def _assembler_command() -> list[str]:
@@ -53,10 +54,10 @@ def assemble_smithy(
             header="Unable to read Smithy source",
             detail=f"Smithy source files do not exist: {[str(path) for path in missing]}",
         )
-    if not TRAIT_DEFINITIONS.is_file():  # pragma: no cover - packaging integrity guard
+    if not TRAIT_BUNDLE.is_file():  # pragma: no cover - packaging integrity guard
         raise CodegenError(
             header="Spitzeisen Smithy traits are unavailable",
-            detail=f"the installed package is missing {TRAIT_DEFINITIONS}",
+            detail=f"the installed package is missing {TRAIT_BUNDLE}",
         )
     if working_directory is not None:
         working_directory.mkdir(parents=True, exist_ok=True)
@@ -70,7 +71,7 @@ def assemble_smithy(
             "--quiet",
             "--flatten",
             str(source),
-            str(TRAIT_DEFINITIONS),
+            str(TRAIT_BUNDLE),
             *(str(path.resolve()) for path in sources),
         ]
         process = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603

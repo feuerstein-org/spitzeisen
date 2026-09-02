@@ -1,19 +1,26 @@
 plugins {
     `java-library`
+    checkstyle
+    alias(libs.plugins.smithy.jar)
+    alias(libs.plugins.spotless)
 }
 
-description = "Smithy semantic frontend for Spitzeisen's Python SDK generator"
+description = "Smithy semantic frontend for Spitzeisen runtime-neutral service plans"
+
+val spitzeisenJavaVersion = rootProject.extra["spitzeisenJavaVersion"] as String
+val spitzeisenSmithyVersion = rootProject.extra["spitzeisenSmithyVersion"] as String
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        languageVersion = JavaLanguageVersion.of(spitzeisenJavaVersion.toInt())
     }
 }
 
 dependencies {
-    api(libs.smithy.codegen)
-    implementation(libs.smithy.build)
-    implementation(libs.smithy.jsonschema)
+    implementation("software.amazon.smithy:smithy-model:$spitzeisenSmithyVersion")
+    implementation("software.amazon.smithy:smithy-build:$spitzeisenSmithyVersion")
+    implementation("software.amazon.smithy:smithy-codegen-core:$spitzeisenSmithyVersion")
+    implementation("software.amazon.smithy:smithy-jsonschema:$spitzeisenSmithyVersion")
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)
@@ -22,8 +29,32 @@ dependencies {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
-    options.release = 17
+    options.release = spitzeisenJavaVersion.toInt()
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+}
+
+checkstyle {
+    toolVersion = libs.versions.checkstyle.get()
+}
+
+tasks.withType<Checkstyle>().configureEach {
+    configFile = rootProject.file("config/checkstyle/checkstyle.xml")
+    maxWarnings = 0
+}
+
+// Tests benefit from formatting, but their method names describe test cases rather than an API.
+tasks.named<Checkstyle>("checkstyleTest") {
+    enabled = false
+}
+
+spotless {
+    java {
+        googleJavaFormat(libs.versions.google.java.format.get())
+    }
+}
+
+tasks.named("check") {
+    dependsOn("spotlessCheck")
 }
 
 tasks.withType<Test>().configureEach {
@@ -31,12 +62,21 @@ tasks.withType<Test>().configureEach {
 }
 
 tasks.jar {
-    archiveFileName = "spitzeisen-codegen.jar"
+    archiveFileName = "spitzeisen-service-plan.jar"
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
+    // The Smithy JAR plugin adds host- and time-specific values immediately before packaging.
+    // Register this action first so its later `doFirst` action runs before this normalization.
+    doFirst("normalizeReproducibleManifest") {
+        manifest.attributes(
+            "Build-Timestamp" to "1980-02-01T00:00:00Z",
+            "Build-Jdk" to spitzeisenJavaVersion,
+            "Build-OS" to "reproducible",
+        )
+    }
 }
 
-val installRuntimeJar by tasks.registering(Copy::class) {
+val installRuntimeJar = tasks.register<Copy>("installRuntimeJar") {
     group = "distribution"
     description = "Install the reproducible Smithy plugin JAR into the Python package"
     dependsOn(tasks.jar)
@@ -44,8 +84,6 @@ val installRuntimeJar by tasks.registering(Copy::class) {
     into(rootProject.file("../src/spitzeisen/codegen/smithy"))
 }
 
-tasks.processResources {
-    from(rootProject.file("../src/spitzeisen/codegen/smithy/spitzeisen.smithy")) {
-        into("META-INF/smithy")
-    }
+smithy {
+    smithyBuildConfigs.set(files())
 }

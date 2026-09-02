@@ -4,7 +4,7 @@
 [tools]
 python = "3.14"
 uv = "latest"
-java = "temurin-17"
+java = "temurin-25"
 coursier = "2.1.24"
 
 [tasks.install-ci]
@@ -16,6 +16,7 @@ description = "Show all issues detected by linter (CI only)"
 run = [
     "uv run ruff check . --output-format=github",
     "uv run ruff format . --check --diff",
+    "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:checkstyleMain :spitzeisen-smithy-codegen:spotlessCheck",
 ]
 
 [tasks.check-sync-ci]
@@ -25,6 +26,13 @@ run = "uv run python build_sync.py --check"
 [tasks.check-codegen-ci]
 description = "Fail if the generated example SDK is stale (CI only)"
 run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
+
+[tasks.check-codegen-frontend-ci]
+description = "Build the Java frontend and fail if its bundled JAR is stale (CI only)"
+run = [
+    "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:check :spitzeisen-smithy-codegen-test:smithyBuild :spitzeisen-smithy-codegen:installRuntimeJar",
+    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-service-plan.jar",
+]
 
 [tasks.pre-commit-ci]
 description = "Run pre-commit hooks (CI only)"

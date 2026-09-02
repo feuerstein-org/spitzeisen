@@ -241,6 +241,46 @@ class AsyncSpitzeisenApi:
             )
         ]
 
+    async def _get_all_pages_optional(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        params: QueryParams | None = None,
+        max_results: int | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: object,
+    ) -> list[JsonObject] | None:
+        """Collect pages like ``_get_all_pages``, mapping any HTTP 404 to None."""
+        if max_results is not None and max_results < 1:
+            msg = f"max_results must be >= 1, got {max_results}"
+            raise ValueError(msg)
+
+        current = operation_spec.pagination.first_params(list(params or []))
+        records_seen: list[JsonObject] = []
+        while True:
+            page = await self._request_optional(
+                operation_spec,
+                params=current,
+                headers=headers,
+                **path_params,
+            )
+            if page is None:
+                return None
+            records = operation_spec.pagination.records(page)
+            remaining = None if max_results is None else max_results - len(records_seen)
+            records_seen.extend(records if remaining is None else records[:remaining])
+            if max_results is not None and len(records_seen) >= max_results:
+                return records_seen
+            next_params = operation_spec.pagination.next_params(
+                page,
+                records,
+                current,
+                len(records_seen),
+            )
+            if next_params is None:
+                return records_seen
+            current = list(next_params)
+
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""
         return override if override is not None else self.config.on_validation_error

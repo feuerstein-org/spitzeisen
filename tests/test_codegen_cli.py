@@ -2,19 +2,26 @@
 
 import importlib
 import json
+import shutil
 import sys
+import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
-from plan_fixtures import native_weather_client, things_client
+from plan_fixtures import native_weather_service_plan, things_plan, things_service_plan
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
+from spitzeisen.codegen import cli as codegen_cli
 from spitzeisen.codegen.cli import main
 from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import ImportedSmithy
-from spitzeisen.codegen.plan import TargetSettings
+from spitzeisen.codegen.python_context import PythonSettings
+from spitzeisen.codegen.python_lowering import lower_service_plan as production_lower_service_plan
+from spitzeisen.codegen.python_plan import PythonPlan
+from spitzeisen.codegen.service_plan import ServicePlan
 
 
 @pytest.fixture(autouse=True)
@@ -43,16 +50,23 @@ def converted_smithy(monkeypatch: pytest.MonkeyPatch) -> None:
     def compile_frontend(
         assembled: dict[str, Any],
         *,
-        target: TargetSettings,
+        service: str | None,
         working_directory: Path | None,
     ) -> FrontendResult:
-        del assembled, working_directory
+        del assembled, service, working_directory
         return FrontendResult(
-            client=things_client(package=target.package, client_name=target.client_name),
+            service_plan=things_service_plan(),
             model_schema={},
         )
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
+
+    def lower(plan: ServicePlan, settings: PythonSettings) -> PythonPlan:
+        if plan.service.id == "example#ExampleService":
+            return things_plan(package=settings.package, client_name=settings.client_name)
+        return production_lower_service_plan(plan, settings)
+
+    monkeypatch.setattr(codegen_cli, "lower_service_plan", lower)
 
 
 def project(root: Path) -> tuple[Path, Path, Path]:
@@ -61,7 +75,7 @@ def project(root: Path) -> tuple[Path, Path, Path]:
     package_root = root / "example_sdk"
     input_dir.mkdir()
     (package_root / "models").mkdir(parents=True)
-    (package_root / "models" / "things.py").write_text(
+    (package_root / "models" / "thing.py").write_text(
         "from spitzeisen import SpitzeisenModel\n\nclass Thing(SpitzeisenModel):\n    pass\n",
     )
     overlay = input_dir / "example.smithy"
@@ -130,16 +144,193 @@ def test_cli_exposes_one_generation_transaction_and_one_drift_check(tmp_path: Pa
     assert help_result.exit_code == 0
     assert "generate" in help_result.output
     assert "check" in help_result.output
+    assert "doctor" in help_result.output
     assert "\n  models " not in help_result.output
     assert "\n  operations " not in help_result.output
     assert generated.exit_code == 0, generated.output
-    assert "generated 14 files" in generated.output
+    assert "generated 15 files" in generated.output
     assert checked.exit_code == 0, checked.output
-    assert "14 generated or scaffolded modules are up to date" in checked.output
+    assert "15 generated or scaffolded modules are up to date" in checked.output
     package_source = (package_root / "__init__.py").read_text()
     assert "from example_sdk._async.client import AsyncExampleApi" in package_source
     assert "from example_sdk._sync.client import SyncExampleApi" in package_source
     assert "from example_sdk.models import Thing" not in package_source
+
+    sys.path.insert(0, str(tmp_path))
+    try:
+        generated_package = importlib.import_module("example_sdk")
+        generated_models = importlib.import_module("example_sdk.models")
+        assert generated_package.AsyncExampleApi.__name__ == "AsyncExampleApi"
+        assert not hasattr(generated_models, "Thing")
+    finally:
+        sys.path.remove(str(tmp_path))
+        for module_name in tuple(sys.modules):
+            if module_name == "example_sdk" or module_name.startswith("example_sdk."):
+                del sys.modules[module_name]
+
+
+def test_cli_loads_python_only_target_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """External symbols and adapter implementations enter only the Python lowering boundary."""
+    openapi, overlay, package_root = project(tmp_path)
+    settings_path = tmp_path / "python-target.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "external_models": {
+                    "example#Thing": {
+                        "module": "records.models",
+                        "symbol": "Record",
+                        "dependencies": ["records-runtime>=1"],
+                    },
+                },
+                "input_adapters": {
+                    "example.adapters#date": {
+                        "function": {"module": "example_sdk.params", "name": "coerce_date"},
+                        "public_type": {"kind": "date_input"},
+                    },
+                },
+                "protocol_preference": ["spitzeisen.protocols#genericRestJson"],
+            },
+        ),
+    )
+    captured: list[PythonSettings] = []
+
+    def lower(plan: ServicePlan, settings: PythonSettings) -> PythonPlan:
+        del plan
+        captured.append(settings)
+        return things_plan(package=settings.package, client_name=settings.client_name)
+
+    monkeypatch.setattr(codegen_cli, "lower_service_plan", lower)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "generate",
+            "--path",
+            str(openapi),
+            "--overlay",
+            str(overlay),
+            "--package",
+            "example_sdk",
+            "--client-name",
+            "ExampleApi",
+            "--python-settings",
+            str(settings_path),
+            "--output-path",
+            str(package_root),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert captured[0].external_models["example#Thing"].module == "records.models"
+    assert captured[0].input_adapters["example.adapters#date"].public_type.kind == "date_input"
+    assert captured[0].protocol_preference == ("spitzeisen.protocols#genericRestJson",)
+
+
+def test_cli_accepts_an_external_model_exported_by_a_local_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A local external-model module may be either a Python file or a package ``__init__``."""
+    openapi, overlay, package_root = project(tmp_path)
+    (package_root / "models" / "__init__.py").write_text(
+        "from spitzeisen import SpitzeisenModel\n\nclass Thing(SpitzeisenModel):\n    pass\n",
+    )
+    external = things_plan(package="example_sdk", client_name="ExampleApi")
+    operation = replace(external.operations[0], model_module="example_sdk.models")
+    external = replace(external, operations=(operation,))
+
+    def lower_external(plan: ServicePlan, settings: PythonSettings) -> PythonPlan:
+        del plan, settings
+        return external
+
+    monkeypatch.setattr(codegen_cli, "lower_service_plan", lower_external)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "generate",
+            "--path",
+            str(openapi),
+            "--overlay",
+            str(overlay),
+            "--package",
+            "example_sdk",
+            "--client-name",
+            "ExampleApi",
+            "--output-path",
+            str(package_root),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "from example_sdk.models import Thing" in (package_root / "_async" / "_generated" / "things.py").read_text()
+
+
+def test_cli_reports_invalid_python_target_settings_without_a_traceback(tmp_path: Path) -> None:
+    """Target-config structural errors are concise and occur before compilation."""
+    openapi, overlay, package_root = project(tmp_path)
+    settings_path = tmp_path / "python-target.json"
+    settings_path.write_text('{"external_models": []}')
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "generate",
+            "--path",
+            str(openapi),
+            "--overlay",
+            str(overlay),
+            "--package",
+            "example_sdk",
+            "--client-name",
+            "ExampleApi",
+            "--python-settings",
+            str(settings_path),
+            "--output-path",
+            str(package_root),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Invalid Python target settings" in result.output
+    assert "external_models must be an object" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_doctor_checks_the_packaged_frontend_without_network_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed local prerequisite is visible before a full generation transaction starts."""
+    bundle = tmp_path / "spitzeisen-service-plan.jar"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(
+            "META-INF/services/software.amazon.smithy.build.SmithyBuildPlugin",
+            "org.example.Plugin\n",
+        )
+        for name in ("spitzeisen-api.smithy", "spitzeisen-protocols.smithy", "spitzeisen-python.smithy"):
+            archive.writestr(f"META-INF/smithy/{name}", '$version: "2"\n')
+    monkeypatch.setattr(codegen_cli, "PLUGIN_JAR", bundle)
+
+    def which(executable: str) -> str:
+        return f"/{executable}"
+
+    monkeypatch.setattr(shutil, "which", which)
+
+    def command_output(command: list[str]) -> tuple[bool, str]:
+        return True, 'openjdk version "25.0.4"' if command[-1] == "-version" else "2.1.24"
+
+    monkeypatch.setattr(codegen_cli, "_command_output", command_output)
+
+    result = CliRunner().invoke(main, ["doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "OK   Java" in result.output
+    assert "OK   Coursier" in result.output
+    assert "OK   Bundled Smithy plugin" in result.output
+    assert "pinned CLI and JSON Schema frontend 1.73.0" in result.output
 
 
 def test_import_command_writes_an_inspectable_smithy_json_ast(tmp_path: Path) -> None:
@@ -190,13 +381,13 @@ def test_cli_generates_pydantic_models_from_native_smithy(
     def compile_frontend(
         assembled: dict[str, Any],
         *,
-        target: TargetSettings,
+        service: str | None,
         working_directory: Path | None,
     ) -> FrontendResult:
-        del assembled, target
+        del assembled, service
         assert working_directory == tmp_path
         return FrontendResult(
-            client=native_weather_client(),
+            service_plan=native_weather_service_plan(),
             model_schema=schema,
         )
 

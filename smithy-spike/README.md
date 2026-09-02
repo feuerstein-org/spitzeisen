@@ -21,7 +21,7 @@ virtual environments are ignored.
 - Smithy CLI 1.73.0
 - `smithy-python` `b1e41e9d247fffb799dc12a174032fc3a78dbf2a` (2026-08-24), codegen 0.5.0
 - `smithy-translate` 0.7.8
-- Temurin JDK 17.0.20.1, Pandoc 3.10.2, Python 3.12
+- Temurin JDK 25.0.4.1, Pandoc 3.10.2, Python 3.12
 
 The Python generator is not published to Maven Central yet. Build the tested revision into the
 local Maven repository first:
@@ -33,7 +33,7 @@ cd /tmp/smithy-python/codegen
 ./gradlew publishToMavenLocal
 ```
 
-With Java 17, Pandoc, and the Smithy CLI on `PATH`, regenerate the handwritten client with:
+With Java 25 or newer, Pandoc, and the Smithy CLI on `PATH`, regenerate the handwritten client with:
 
 ```bash
 cd smithy-spike

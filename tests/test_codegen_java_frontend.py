@@ -8,17 +8,24 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from plan_fixtures import native_weather_client
+from plan_fixtures import native_weather_service_plan
 
+from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.java_frontend import PLUGIN_NAME, FrontendResult, compile_smithy_frontend
-from spitzeisen.codegen.plan import TargetSettings
-from spitzeisen.codegen.plan_io import client_plan_document
+from spitzeisen.codegen.java_frontend import (
+    PLUGIN_NAME,
+    SMITHY_CODEGEN_CORE_COORDINATE,
+    SMITHY_JSONSCHEMA_COORDINATE,
+    FrontendResult,
+    compile_smithy_frontend,
+    smithy_build_command,
+)
+from spitzeisen.codegen.service_plan_io import service_plan_document
 
 
 def _expected() -> FrontendResult:
     return FrontendResult(
-        client=native_weather_client(),
+        service_plan=native_weather_service_plan(),
         model_schema={"$defs": {"Weather": {"type": "object"}}},
     )
 
@@ -30,11 +37,39 @@ def _model() -> dict[str, Any]:
     }
 
 
-def test_frontend_runs_smithy_build_and_loads_versioned_artifacts(
+def test_frontend_launcher_includes_every_thin_plugin_runtime_dependency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The process wrapper passes only target settings and consumes both plugin outputs."""
+    """The bundled JAR stays reproducible and thin, so Coursier supplies its Smithy libraries."""
+    plugin = tmp_path / "spitzeisen-service-plan.jar"
+    plugin.touch()
+
+    def find_coursier(name: str) -> str | None:
+        return "/tools/cs" if name == "cs" else None
+
+    monkeypatch.setattr(
+        "spitzeisen.codegen.java_frontend.shutil.which",
+        find_coursier,
+    )
+
+    assert smithy_build_command(plugin) == [
+        "/tools/cs",
+        "launch",
+        SMITHY_CLI_COORDINATE,
+        SMITHY_JSONSCHEMA_COORDINATE,
+        SMITHY_CODEGEN_CORE_COORDINATE,
+        "--extra-jars",
+        str(plugin),
+        "--",
+    ]
+
+
+def test_frontend_runs_smithy_build_and_loads_neutral_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The process wrapper passes only service selection and consumes both plugin outputs."""
     expected = _expected()
     monkeypatch.setattr("spitzeisen.codegen.java_frontend._frontend_command", lambda: ["smithy-with-plugin", "--"])
 
@@ -44,15 +79,10 @@ def test_frontend_runs_smithy_build_and_loads_versioned_artifacts(
         config_path = Path(command[command.index("--config") + 1])
         config: dict[str, Any] = json.loads(config_path.read_text())
         settings = config["projections"]["spitzeisen"]["plugins"][PLUGIN_NAME]
-        assert settings == {
-            "package": "native_weather_sdk",
-            "clientName": "NativeWeatherApi",
-            "service": "native.weather#WeatherService",
-            "vendor": "weather test",
-        }
+        assert settings == {"service": "native.weather#WeatherService"}
         artifacts = output / "spitzeisen" / PLUGIN_NAME
         artifacts.mkdir(parents=True)
-        (artifacts / "client-plan.json").write_text(json.dumps(client_plan_document(expected.client)))
+        (artifacts / "service-plan.json").write_text(json.dumps(service_plan_document(expected.service_plan)))
         (artifacts / "model-schema.json").write_text(json.dumps(expected.model_schema))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
@@ -60,12 +90,7 @@ def test_frontend_runs_smithy_build_and_loads_versioned_artifacts(
 
     actual = compile_smithy_frontend(
         _model(),
-        target=TargetSettings(
-            package="native_weather_sdk",
-            client_name="NativeWeatherApi",
-            service="WeatherService",
-            vendor="weather test",
-        ),
+        service="WeatherService",
         working_directory=tmp_path,
     )
 
@@ -88,7 +113,6 @@ def test_frontend_reports_smithy_build_errors(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(CodegenError, match="invalid trait"):
         compile_smithy_frontend(
             _model(),
-            target=TargetSettings(package="native_weather_sdk", client_name="NativeWeatherApi"),
         )
 
 
@@ -99,9 +123,5 @@ def test_frontend_rejects_an_unknown_service_name(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(CodegenError, match=r"absent or ambiguous.*WeatherService"):
         compile_smithy_frontend(
             _model(),
-            target=TargetSettings(
-                package="native_weather_sdk",
-                client_name="NativeWeatherApi",
-                service="RemovedWeatherService",
-            ),
+            service="RemovedWeatherService",
         )

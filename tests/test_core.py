@@ -397,6 +397,14 @@ async def test_request_optional_maps_404_to_none(surface: str) -> None:
     assert await driver.call("_request_optional", ONE_THING, params=None, thing_id="gone") is None
 
 
+async def test_optional_collection_maps_404_to_none_on_both_surfaces(surface: str) -> None:
+    """Collection-level absent semantics work identically in async and sync generated clients."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things", status=404, json={"error": "not found"})
+
+    assert await driver.call("_get_all_pages_optional", THINGS) is None
+
+
 async def test_request_optional_propagates_other_errors(surface: str) -> None:
     """Only 404 becomes None; anything else still raises."""
     driver = Driver(surface)

@@ -5,9 +5,12 @@ namespace native.weather
 use smithy.api#http
 use smithy.api#httpLabel
 use smithy.api#httpPayload
-use spitzeisen.api#sdkOperation
+use spitzeisen.api#notFound
+use spitzeisen.protocols#genericRestJson
+use spitzeisen.python#operation
 
 /// A small service used to exercise Spitzeisen's Smithy-first pipeline.
+@genericRestJson
 service WeatherService {
     version: "1.0"
     operations: [GetWeather]
@@ -16,7 +19,8 @@ service WeatherService {
 /// Return the current weather for one city.
 @readonly
 @http(method: "GET", uri: "/weather/{city}", code: 200)
-@sdkOperation(notFound: "empty")
+@operation(module: "weather")
+@notFound(behavior: "absent")
 operation GetWeather {
     input := {
         /// City whose current weather should be returned.

@@ -1,9 +1,9 @@
 {% set vendor_name = client.vendor | replace("_", " ") | replace("-", " ") | title -%}
-"""{{ vendor_name }} API client."""
+"""{{ vendor_name | py_doc }} API client."""
 
 from {{ package }}.{{ folder }}._generated.client import {{ prefix }}{{ client.client_name }}Base
 
 # This file is created once by spitzeisen-gen and is safe to customize.
 
 class {{ prefix }}{{ client.client_name }}({{ prefix }}{{ client.client_name }}Base):
-    """Client for the {{ vendor_name }} API."""
+    """Client for the {{ vendor_name | py_doc }} API."""
