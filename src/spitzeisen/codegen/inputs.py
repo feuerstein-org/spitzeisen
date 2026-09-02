@@ -16,19 +16,19 @@ from spitzeisen.codegen.diagnostics import ModelImportWarning
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.java_frontend import compile_smithy_frontend
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.plan import ClientPlan, TargetSettings
+from spitzeisen.codegen.service_plan import ServicePlan
 
 type ModelInputType = Literal["openapi", "jsonschema"]
 
 
 @dataclass(frozen=True, slots=True)
 class BuildInputs:
-    """Pydantic schema, assembled Smithy model, and the compiled SDK plan."""
+    """Pydantic sidecar, assembled Smithy model, and the neutral service plan."""
 
     model_schema: dict[str, Any]
     model_input_type: ModelInputType
     smithy: dict[str, Any]
-    client: ClientPlan
+    service_plan: ServicePlan
     warnings: tuple[ModelImportWarning, ...]
 
 
@@ -87,10 +87,10 @@ def load_compile_inputs(
     source: str | Path | None = None,
     smithy_sources: tuple[Path, ...] = (),
     overlays: tuple[Path, ...],
-    target: TargetSettings,
+    service: str | None = None,
     timeout: int,
 ) -> BuildInputs:
-    """Load exactly one model source, assemble Smithy, and compile one SDK plan."""
+    """Load exactly one model source, assemble Smithy, and compile one service plan."""
     if (source is None) == (not smithy_sources):
         raise CodegenError(detail="provide either an OpenAPI source or at least one native Smithy source")
     if source is not None:
@@ -106,15 +106,14 @@ def load_compile_inputs(
         model_input_type = "jsonschema"
         import_warnings = ()
     working_directory = smithy_sources[0].parent if smithy_sources else overlays[0].parent if overlays else None
-    frontend = compile_smithy_frontend(assembled, target=target, working_directory=working_directory)
-    client = frontend.client
-    if smithy_sources and any(operation.generate_model for operation in client.operations):
+    frontend = compile_smithy_frontend(assembled, service=service, working_directory=working_directory)
+    if smithy_sources:
         model_schema = frontend.model_schema
     warnings = import_warnings
     return BuildInputs(
         model_schema=model_schema,
         model_input_type=model_input_type,
         smithy=assembled,
-        client=client,
+        service_plan=frontend.service_plan,
         warnings=warnings,
     )

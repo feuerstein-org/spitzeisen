@@ -2,6 +2,7 @@
 
 import asyncio
 
+import httpx2
 from weather_sdk import AsyncWeatherApi
 
 from spitzeisen import AsyncSpitzeisenConfig, NoLimit, QueryParamAuth
@@ -53,9 +54,7 @@ async def main() -> None:
     config = AsyncSpitzeisenConfig(
         base_url="https://api.openweathermap.org",
         auth=QueryParamAuth("appid", "49adeceac895ee9f1403ebbbf6a44628"),
-        # http_client=httpx2.AsyncClient(transport=router.mock_transport()),
-        # TODO: Why does this need to be defined, should be set as a default, maybe re-export AsyncSpitzeisenConfig
-        # as AsyncWeatherSdkConfig or smth like that?
+        http_client=httpx2.AsyncClient(transport=router.mock_transport()),
         limiter=NoLimit(),
     )
 
@@ -73,7 +72,7 @@ async def main() -> None:
     print(f"city: {weather.name}")
     print(f"temperature: {weather.main.temp}")
     print(f"condition: {weather.weather[0].description}")
-    # print(f"wire query: {router.requests[0].params}")
+    print(f"wire query: {router.requests[0].params}")
 
 
 if __name__ == "__main__":

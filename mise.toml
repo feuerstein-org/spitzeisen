@@ -1,7 +1,7 @@
 [tools]
 python = "3.14"
 uv = "latest"
-java = "temurin-17"
+java = "temurin-25"
 coursier = "2.1.24"
 
 [tasks.install]
@@ -30,12 +30,19 @@ run = "uv run spitzeisen-gen import-openapi --path examples/spec/vendor.json --o
 
 [tasks.check-codegen]
 description = "Fail if any generated example SDK output is stale"
-depends = ["install-codegen-frontend"]
+depends = ["check-codegen-frontend"]
 run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.install-codegen-frontend]
 description = "Build, test, and install the reproducible Java Smithy plugin into the Python package"
-run = "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:test :spitzeisen-smithy-codegen:installRuntimeJar"
+run = "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:check :spitzeisen-smithy-codegen-test:smithyBuild :spitzeisen-smithy-codegen:installRuntimeJar"
+
+[tasks.check-codegen-frontend]
+description = "Fail if the bundled Smithy plugin JAR is stale"
+run = [
+    "mise run install-codegen-frontend",
+    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-service-plan.jar",
+]
 
 [tasks.demo-example]
 description = "Run the generated weather SDK against an offline fake transport"
@@ -47,7 +54,7 @@ description = "Run the complete Java Smithy frontend verification suite"
 run = [
     "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:build :spitzeisen-smithy-codegen:installRuntimeJar :spitzeisen-smithy-codegen-test:smithyBuild",
     "uv run --locked spitzeisen-gen import-openapi --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --output-path codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
-    "cs launch software.amazon.smithy:smithy-cli:1.72.0 software.amazon.smithy:smithy-jsonschema:1.72.0 --extra-jars codegen/spitzeisen-smithy-codegen/build/libs/spitzeisen-codegen.jar -- build --quiet --config codegen/spitzeisen-smithy-codegen-test/openapi-smithy-build.json --output codegen/spitzeisen-smithy-codegen-test/build/openapi-smithy codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
+    "uv run --locked python codegen/run_smithy_build.py --plugin-jar codegen/spitzeisen-smithy-codegen/build/libs/spitzeisen-service-plan.jar --config codegen/spitzeisen-smithy-codegen-test/openapi-smithy-build.json --output codegen/spitzeisen-smithy-codegen-test/build/openapi-smithy codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
     "uv run --locked python codegen/verify_frontend.py",
 ]
 
@@ -61,6 +68,7 @@ description = "Show all issues detected by linter"
 run = [
     "uv run ruff check .",
     "uv run ruff format . --check",
+    "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:checkstyleMain :spitzeisen-smithy-codegen:spotlessCheck",
 ]
 
 [tasks.lint-fix]
@@ -69,6 +77,7 @@ depends = ["build-sync"]
 run = [
     "uv run ruff check --fix .",
     "uv run ruff format .",
+    "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:spotlessApply",
 ]
 
 [tasks.test]

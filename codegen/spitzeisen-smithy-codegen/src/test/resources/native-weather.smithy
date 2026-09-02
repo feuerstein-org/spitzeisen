@@ -5,8 +5,11 @@ namespace native.weather
 use smithy.api#http
 use smithy.api#httpLabel
 use smithy.api#httpPayload
-use spitzeisen.api#sdkOperation
+use spitzeisen.api#notFound
+use spitzeisen.api#result
+use spitzeisen.protocols#genericRestJson
 
+@genericRestJson
 service WeatherService {
     version: "1.0"
     operations: [GetWeather]
@@ -15,7 +18,8 @@ service WeatherService {
 /// Return the current weather for one city.
 @readonly
 @http(method: "GET", uri: "/weather/{city}", code: 200)
-@sdkOperation(notFound: "empty")
+@result(path: ["weather"])
+@notFound(behavior: "absent")
 operation GetWeather {
     input := {
         /// City whose current weather should be returned.

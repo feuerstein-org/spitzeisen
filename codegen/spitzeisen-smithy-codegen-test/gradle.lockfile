@@ -1,0 +1,13 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+# To regenerate this file, run: ./gradlew :spitzeisen-smithy-codegen-test:dependencies --write-locks
+software.amazon.smithy:smithy-build:1.73.0=runtimeClasspath,smithyCli,testRuntimeClasspath
+software.amazon.smithy:smithy-cli:1.73.0=smithyCli
+software.amazon.smithy:smithy-codegen-core:1.73.0=runtimeClasspath,smithyCli,testRuntimeClasspath
+software.amazon.smithy:smithy-diff:1.73.0=smithyCli
+software.amazon.smithy:smithy-jsonschema:1.73.0=runtimeClasspath,smithyCli,testRuntimeClasspath
+software.amazon.smithy:smithy-model:1.73.0=runtimeClasspath,smithyCli,testRuntimeClasspath
+software.amazon.smithy:smithy-syntax:1.73.0=smithyCli
+software.amazon.smithy:smithy-utils:1.73.0=runtimeClasspath,smithyCli,testRuntimeClasspath
+empty=annotationProcessor,compileClasspath,smithyBuild,testAnnotationProcessor,testCompileClasspath,testSmithyBuild

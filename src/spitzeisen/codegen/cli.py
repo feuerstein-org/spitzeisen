@@ -6,8 +6,10 @@ import codecs
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import zipfile
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,15 +28,20 @@ from spitzeisen.codegen.generate import (
     generated_model_names,
     model_exports_module,
     prune_spec,
+    python_tool,
 )
 from spitzeisen.codegen.inputs import load_compile_inputs, load_document
+from spitzeisen.codegen.java_frontend import PLUGIN_JAR
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.plan import TargetSettings
+from spitzeisen.codegen.python_lowering import lower_service_plan
+from spitzeisen.codegen.python_settings_io import python_settings_from_document
+from spitzeisen.codegen.toolchain import JAVA_VERSION, SMITHY_VERSION
 
 if TYPE_CHECKING:
     from spitzeisen.codegen.diagnostics import ModelImportWarning
     from spitzeisen.codegen.inputs import ModelInputType
-    from spitzeisen.codegen.plan import ClientPlan
+    from spitzeisen.codegen.python_context import PythonSettings
+    from spitzeisen.codegen.python_plan import PythonPlan
 
 DEFAULT_MODEL_BASE_CLASS = "spitzeisen.SpitzeisenModel"
 DEFAULT_HTTP_TIMEOUT = 5
@@ -54,6 +61,7 @@ class Config:
     package: str
     client_name: str
     vendor: str | None
+    python_settings_path: Path | None
     output_path: Path
     file_encoding: str
     base_class: str
@@ -68,12 +76,100 @@ class RenderResult:
     warnings: tuple[ModelImportWarning, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class DoctorCheck:
+    """One local code-generation prerequisite checked by ``spitzeisen-gen doctor``."""
+
+    label: str
+    passed: bool
+    detail: str
+
+
 main = typer.Typer(name="spitzeisen-gen", no_args_is_help=True)
 
 
 @main.callback()
 def cli() -> None:
     """Generate a polished Python SDK from Smithy or imported OpenAPI."""
+
+
+def _command_output(command: list[str]) -> tuple[bool, str]:
+    """Run one cheap version command without turning diagnostics into tracebacks."""
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=5)  # noqa: S603
+    except OSError as err:
+        return False, str(err)
+    output = (result.stdout or result.stderr).strip()
+    return result.returncode == 0, output
+
+
+def _doctor_checks() -> tuple[DoctorCheck, ...]:
+    """Check local launch prerequisites without downloading dependencies or invoking Smithy."""
+    java = shutil.which("java")
+    if java is None:
+        java_check = DoctorCheck("Java", False, f"not found (requires Java {JAVA_VERSION} or newer)")
+    else:
+        available, output = _command_output([java, "-version"])
+        match = re.search(r'version\s+"(?P<major>\d+)', output)
+        major = int(match.group("major")) if match else None
+        java_check = DoctorCheck(
+            "Java",
+            available and major is not None and major >= JAVA_VERSION,
+            (
+                f"{output.splitlines()[0]} (requires Java {JAVA_VERSION} or newer)"
+                if output
+                else f"could not read the Java version (requires Java {JAVA_VERSION} or newer)"
+            ),
+        )
+
+    coursier = shutil.which("coursier") or shutil.which("cs")
+    if coursier is None:
+        coursier_check = DoctorCheck("Coursier", False, "not found (install `coursier` or `cs` on PATH)")
+    else:
+        available, output = _command_output([coursier, "version"])
+        coursier_check = DoctorCheck(
+            "Coursier",
+            available,
+            output.splitlines()[0] if output else f"{coursier} did not report a version",
+        )
+
+    try:
+        with zipfile.ZipFile(PLUGIN_JAR) as bundle:
+            required_entries = {
+                "META-INF/services/software.amazon.smithy.build.SmithyBuildPlugin",
+                "META-INF/smithy/spitzeisen-api.smithy",
+                "META-INF/smithy/spitzeisen-protocols.smithy",
+                "META-INF/smithy/spitzeisen-python.smithy",
+            }
+            has_traits = required_entries.issubset(bundle.namelist())
+        bundle_check = DoctorCheck(
+            "Bundled Smithy plugin",
+            has_traits,
+            f"{PLUGIN_JAR} ({'includes' if has_traits else 'is missing'} custom traits)",
+        )
+    except (OSError, zipfile.BadZipFile) as err:
+        bundle_check = DoctorCheck("Bundled Smithy plugin", False, f"{PLUGIN_JAR}: {err}")
+
+    smithy_check = DoctorCheck(
+        "Smithy",
+        True,
+        f"pinned CLI and JSON Schema frontend {SMITHY_VERSION}",
+    )
+    return java_check, coursier_check, bundle_check, smithy_check
+
+
+@main.command()
+def doctor() -> None:
+    """Check the local Java, Coursier, and bundled Smithy frontend prerequisites."""
+    checks = _doctor_checks()
+    for check in checks:
+        status = "OK" if check.passed else "FAIL"
+        typer.secho(
+            f"{status:4} {check.label}: {check.detail}",
+            fg=typer.colors.GREEN if check.passed else typer.colors.RED,
+        )
+    if not all(check.passed for check in checks):
+        raise typer.Exit(code=1)
 
 
 def _select_source(url: str | None, path: Path | None) -> str | Path:
@@ -117,6 +213,7 @@ def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
     package: str,
     client_name: str,
     vendor: str | None,
+    python_settings_path: Path | None,
     output_path: Path,
     file_encoding: str,
     base_class: str,
@@ -137,6 +234,7 @@ def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
         package=package,
         client_name=client_name,
         vendor=vendor,
+        python_settings_path=python_settings_path,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -232,6 +330,11 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
     package: str = typer.Option(..., help="Importable Python package name"),
     client_name: str = typer.Option(..., help="Generated aggregate client class name"),
     vendor: str | None = typer.Option(None, help="Readable vendor name used in generated documentation"),
+    python_settings: Path | None = typer.Option(
+        None,
+        "--python-settings",
+        help="JSON file containing Python-only external models, adapters, protocols, and integrations",
+    ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -248,6 +351,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
         package=package,
         client_name=client_name,
         vendor=vendor,
+        python_settings_path=python_settings,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -278,6 +382,11 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
     package: str = typer.Option(..., help="Importable Python package name"),
     client_name: str = typer.Option(..., help="Generated aggregate client class name"),
     vendor: str | None = typer.Option(None, help="Readable vendor name used in generated documentation"),
+    python_settings: Path | None = typer.Option(
+        None,
+        "--python-settings",
+        help="JSON file containing Python-only external models, adapters, protocols, and integrations",
+    ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
@@ -294,6 +403,7 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
         package=package,
         client_name=client_name,
         vendor=vendor,
+        python_settings_path=python_settings,
         output_path=output_path,
         file_encoding=file_encoding,
         base_class=base_class,
@@ -355,28 +465,31 @@ def normalize_model_header(source: str, input_type: ModelInputType = "openapi") 
 
 def _render(config: Config) -> RenderResult:
     """Compile all inputs and render the complete output tree."""
+    settings = _load_python_settings(config)
     inputs = load_compile_inputs(
         source=config.source,
         smithy_sources=config.smithy_sources,
         overlays=config.overlays,
-        target=TargetSettings(
-            package=config.package,
-            client_name=config.client_name,
-            service=config.service,
-            vendor=config.vendor,
-        ),
+        service=config.service,
         timeout=config.http_timeout,
     )
-    _validate_handwritten_models(inputs.client, config.output_path)
-    modules = generate_plan(inputs.client, config.output_path)
-    generated_operations = tuple(operation for operation in inputs.client.operations if operation.generate_model)
+    try:
+        client = lower_service_plan(inputs.service_plan, settings)
+    except ValueError as err:
+        raise CodegenError(header="Python plan lowering failed", detail=str(err)) from err
+    _validate_handwritten_models(client, config.output_path)
+    try:
+        modules = generate_plan(client, config.output_path)
+    except ValueError as err:
+        raise CodegenError(header="Python source rendering failed", detail=str(err)) from err
+    generated_operations = tuple(operation for operation in client.operations if operation.generate_model)
     if generated_operations:
         try:
             model_source = generate_model_source(
                 schema=inputs.model_schema,
                 input_type=inputs.model_input_type,
                 working_directory=_working_directory(config),
-                client=inputs.client,
+                client=client,
                 package_root=config.output_path,
                 base_class=config.base_class,
                 encoding=config.file_encoding,
@@ -384,7 +497,11 @@ def _render(config: Config) -> RenderResult:
         except subprocess.CalledProcessError as err:
             detail = (err.stderr or err.stdout or str(err)).strip()
             raise CodegenError(header="Model generation failed", detail=detail) from err
-        generated_names = set(generated_model_names(model_source))
+        try:
+            generated_names = set(generated_model_names(model_source))
+        except SyntaxError as err:
+            detail = f"the model backend emitted invalid Python: {err.msg} (line {err.lineno})"
+            raise CodegenError(header="Model generation failed", detail=detail) from err
         missing_models = sorted(
             operation.model for operation in generated_operations if operation.model not in generated_names
         )
@@ -392,26 +509,68 @@ def _render(config: Config) -> RenderResult:
             raise CodegenError(
                 detail=(
                     f"the model backend did not generate response models {missing_models}; "
-                    "check response schema titles or set @sdkOperation(generateModel: false)"
+                    "check response schema titles or configure those response ShapeIds in "
+                    "Python target settings under external_models"
                 ),
             )
         modules.append(GeneratedModule(config.output_path / "models" / "_generated.py", model_source))
-        modules.append(model_exports_module(inputs.client, config.output_path, model_source))
+        modules.append(model_exports_module(client, config.output_path, model_source))
+    else:
+        modules.append(model_exports_module(client, config.output_path, ""))
     return RenderResult(modules=modules, warnings=inputs.warnings)
 
 
-# TODO: look into how this flag actually works
-def _validate_handwritten_models(client: ClientPlan, package_root: Path) -> None:
-    """Require handwritten response-model modules for operations which opt out."""
+def _validate_handwritten_models(client: PythonPlan, package_root: Path) -> None:
+    """Require configured local external-model modules before rendering imports to them."""
     missing = [
         operation
         for operation in client.operations
-        if not operation.generate_model and not (package_root / "models" / f"{operation.key}.py").exists()
+        if not operation.generate_model
+        and (path := _local_module_path(client, package_root, operation.model_module)) is not None
+        and not path.exists()
     ]
     if not missing:
         return
-    paths = [f"models/{operation.key}.py ({operation.model})" for operation in missing]
-    raise CodegenError(detail=f"generate_model=false requires handwritten model modules: {paths}")
+    paths = [f"{operation.model_module} ({operation.model})" for operation in missing]
+    raise CodegenError(detail=f"configured external response models require existing local modules: {paths}")
+
+
+def _load_python_settings(config: Config) -> PythonSettings:
+    """Load strict Python-only settings without allowing target concerns into ServicePlan."""
+    document: object = {}
+    if config.python_settings_path is not None:
+        try:
+            document = json.loads(config.python_settings_path.read_text(encoding="utf-8"))
+        except OSError as err:
+            raise CodegenError(
+                header="Unable to read Python target settings",
+                detail=f"{config.python_settings_path}: {err}",
+            ) from err
+        except json.JSONDecodeError as err:
+            raise CodegenError(
+                header="Invalid Python target settings",
+                detail=f"{config.python_settings_path}:{err.lineno}:{err.colno}: {err.msg}",
+            ) from err
+    try:
+        return python_settings_from_document(
+            document,
+            package=config.package,
+            client_name=config.client_name,
+            vendor=config.vendor,
+        )
+    except ValueError as err:
+        raise CodegenError(header="Invalid Python target settings", detail=str(err)) from err
+
+
+def _local_module_path(client: PythonPlan, package_root: Path, module: str) -> Path | None:
+    """Resolve a module inside the generated package; external modules have no local path."""
+    prefix = f"{client.package}."
+    if not module.startswith(prefix):
+        return None
+    relative = module.removeprefix(prefix)
+    module_path = package_root / Path(*relative.split("."))
+    package_init = module_path / "__init__.py"
+    return package_init if package_init.is_file() else module_path.with_suffix(".py")
 
 
 def generate_model_source(
@@ -419,7 +578,7 @@ def generate_model_source(
     schema: dict[str, Any],
     input_type: ModelInputType,
     working_directory: Path,
-    client: ClientPlan,
+    client: PythonPlan,
     package_root: Path,
     base_class: str,
     encoding: str,
@@ -432,15 +591,13 @@ def generate_model_source(
         extra += ["--skip-root-model", "--collapse-root-models"]
     if aliases := client.model_aliases:
         extra += ["--aliases", json.dumps(aliases)]
-    if overrides := client.model_type_overrides:
-        extra += ["--type-overrides", json.dumps(overrides)]
     model_document = prune_spec(schema, client) if input_type == "openapi" else schema
     with _temporary_sibling(working_directory / input_type, suffix=".json") as model_input:
         model_input.write_text(json.dumps(model_document, indent=2), encoding=encoding)
         with _temporary_sibling(package_root / "models" / "generated", suffix=".py") as output:
             subprocess.run(  # noqa: S603
-                [  # noqa: S607
-                    "datamodel-codegen",
+                [
+                    python_tool("datamodel-codegen"),
                     "--input",
                     str(model_input),
                     "--input-file-type",

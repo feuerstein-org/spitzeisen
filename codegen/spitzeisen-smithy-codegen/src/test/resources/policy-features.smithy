@@ -3,40 +3,48 @@ $version: "2"
 namespace policy.example
 
 use smithy.api#default
+use smithy.api#externalDocumentation
 use smithy.api#http
 use smithy.api#httpHeader
 use smithy.api#httpLabel
 use smithy.api#httpPayload
 use smithy.api#httpQuery
-use spitzeisen.api#hidden
-use spitzeisen.api#modelProperty
+use spitzeisen.api#clientDefault
+use spitzeisen.api#excludeOperation
+use spitzeisen.api#excludeParameter
+use spitzeisen.api#inputAdapter
+use spitzeisen.api#notFound
 use spitzeisen.api#pageNumberPagination
-use spitzeisen.api#pythonParameter
-use spitzeisen.api#sdkOperation
+use spitzeisen.api#queryEncoding
+use spitzeisen.api#rateLimitCost
+use spitzeisen.api#result
 use spitzeisen.api#sorting
+use spitzeisen.python#modelField
+use spitzeisen.python#operation
+use spitzeisen.python#parameter
+use spitzeisen.protocols#genericRestJson
 
+@genericRestJson
 service ExampleService {
     version: "1.0"
-    operations: [ListRecords]
+    operations: [ListRecords, InternalOperation]
 }
 
 /// Return records selected by the caller.
 @http(method: "GET", uri: "/accounts/{account_id}/records", code: 200)
 @readonly
-@sdkOperation(
-    name: "records"
-    methodName: "list_records"
-    documentationUrl: "https://docs.example.test/records"
-    cost: 2.5
-)
+@externalDocumentation(operation: "https://docs.example.test/records")
+@result(path: ["page", "records"])
+@notFound(behavior: "absent")
+@rateLimitCost(units: 2.5)
+@operation(module: "records", accessor: "records", method: "list_records")
 @pageNumberPagination(
-    page: "page"
-    pageSize: "limit"
-    items: "results"
+    pageMember: "page"
+    pageSizeMember: "limit"
     start: 0
     step: 2
 )
-@sorting(style: "suffix", sort: "sort")
+@sorting(encoding: "suffix", sortMember: "sort")
 operation ListRecords {
     input := {
         /// Account whose records are returned.
@@ -57,26 +65,27 @@ operation ListRecords {
 
         /// Filters applied to the records.
         @httpQuery("filter")
-        @pythonParameter(name: "filters", coercion: "comma_list")
+        @parameter(name: "filters")
+        @inputAdapter(id: "comma-list")
         filter: StringList
 
         @httpQuery("since")
-        @pythonParameter(coercion: "date")
+        @inputAdapter(id: "date")
         since: String
 
         @httpQuery("state")
-        @pythonParameter(coercion: "choice", literal: "StateAlias")
         state: State
 
         @httpQuery("custom")
-        @pythonParameter(function: "coerce_custom", annotation: "str")
+        @inputAdapter(id: "custom")
         custom: String
 
         @httpQuery("language")
-        @pythonParameter(clientDefault: "en", style: "pipeDelimited", explode: false)
+        @queryEncoding(style: "pipeDelimited", explode: false)
+        @clientDefault(value: "en")
         language: String
 
-        @hidden
+        @excludeParameter
         @httpQuery("internal")
         internal: String
 
@@ -87,8 +96,21 @@ operation ListRecords {
     output := {
         @required
         @httpPayload
-        records: RecordList
+        page: RecordsPage
     }
+}
+
+@excludeOperation
+@http(method: "GET", uri: "/internal", code: 200)
+@readonly
+operation InternalOperation {
+    input := {}
+    output := {}
+}
+
+structure RecordsPage {
+    @required
+    records: RecordList
 }
 
 enum SortValue {
@@ -115,7 +137,7 @@ structure Record {
     @required
     id: String
 
-    @modelProperty(name: "display_name", type: "str")
+    @modelField(name: "display_name")
     @jsonName("displayName")
     displayName: String
 }

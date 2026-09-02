@@ -56,7 +56,10 @@ from spitzeisen.params import (
     coerce_choices,
     coerce_date,
     coerce_sort,
+    coerce_timestamp,
+    coerce_timestamps,
     require_value,
+    serialize_path_param,
     serialize_query_param,
 )
 
@@ -93,11 +96,14 @@ __all__ = (
     "coerce_choices",
     "coerce_date",
     "coerce_sort",
+    "coerce_timestamp",
+    "coerce_timestamps",
     "extract_records",
     "gather_bounded",
     "http_error_from_status",
     "map_bounded",
     "require_value",
+    "serialize_path_param",
     "serialize_query_param",
     "sync_single_bucket",
 )

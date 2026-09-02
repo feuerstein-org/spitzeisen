@@ -1,4 +1,4 @@
-"""Run Spitzeisen's packaged Smithy Build plugin and load its renderer contract."""
+"""Run Spitzeisen's packaged Smithy Build plugin and load its neutral contract."""
 
 from __future__ import annotations
 
@@ -12,40 +12,36 @@ from typing import TYPE_CHECKING, Any, cast
 
 from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE, SMITHY_CLI_VERSION
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.plan_io import client_plan_from_document
+from spitzeisen.codegen.service_plan_io import service_plan_from_document
 
 if TYPE_CHECKING:
-    from spitzeisen.codegen.plan import ClientPlan, TargetSettings
+    from spitzeisen.codegen.service_plan import ServicePlan
 
 SMITHY_JSONSCHEMA_COORDINATE = f"software.amazon.smithy:smithy-jsonschema:{SMITHY_CLI_VERSION}"
-PLUGIN_NAME = "spitzeisen-python-client-codegen"
-PLUGIN_JAR = Path(__file__).with_name("smithy") / "spitzeisen-codegen.jar"
+SMITHY_CODEGEN_CORE_COORDINATE = f"software.amazon.smithy:smithy-codegen-core:{SMITHY_CLI_VERSION}"
+PLUGIN_NAME = "spitzeisen-service-plan"
+PLUGIN_JAR = Path(__file__).with_name("smithy") / "spitzeisen-service-plan.jar"
 
 
 @dataclass(frozen=True, slots=True)
 class FrontendResult:
     """Outputs emitted by the Java Smithy semantic frontend."""
 
-    client: ClientPlan
+    service_plan: ServicePlan
     model_schema: dict[str, Any]
 
 
 def compile_smithy_frontend(
     model: dict[str, Any],
     *,
-    target: TargetSettings,
+    service: str | None = None,
     working_directory: Path | None = None,
 ) -> FrontendResult:
     """Compile an assembled Smithy model with the packaged production plugin."""
     command = _frontend_command()
-    settings: dict[str, object] = {
-        "package": target.package,
-        "clientName": target.client_name,
-    }
-    if service := _service_id(model, target.service):
-        settings["service"] = service
-    if target.vendor is not None:
-        settings["vendor"] = target.vendor
+    settings: dict[str, object] = {}
+    if service_id := _service_id(model, service):
+        settings["service"] = service_id
     config = {
         "version": "1.0",
         "projections": {
@@ -84,22 +80,22 @@ def compile_smithy_frontend(
             detail = (process.stderr or process.stdout).strip() or (
                 f"Smithy Build exited with status {process.returncode}"
             )
-            raise CodegenError(header="Smithy client-plan compilation failed", detail=detail)
-        plan_document = _load_artifact(artifact_root / "client-plan.json", "client plan")
+            raise CodegenError(header="Smithy service-plan compilation failed", detail=detail)
+        plan_document = _load_artifact(artifact_root / "service-plan.json", "service plan")
         model_schema = _load_artifact(artifact_root / "model-schema.json", "model schema")
     try:
-        client = client_plan_from_document(plan_document)
+        service_plan = service_plan_from_document(plan_document)
     except (TypeError, ValueError) as err:
-        raise CodegenError(header="Smithy frontend emitted an invalid client plan", detail=str(err)) from err
-    return FrontendResult(client=client, model_schema=model_schema)
+        raise CodegenError(header="Smithy frontend emitted an invalid service plan", detail=str(err)) from err
+    return FrontendResult(service_plan=service_plan, model_schema=model_schema)
 
 
-def _frontend_command() -> list[str]:
-    """Resolve Coursier and the packaged, pinned plugin dependencies."""
-    if not PLUGIN_JAR.is_file():  # pragma: no cover - packaging integrity guard
+def smithy_build_command(plugin_jar: Path = PLUGIN_JAR) -> list[str]:
+    """Resolve Coursier and one Smithy plugin JAR for a pinned build invocation."""
+    if not plugin_jar.is_file():  # pragma: no cover - packaging integrity guard
         raise CodegenError(
             header="Smithy codegen plugin is unavailable",
-            detail=f"the installed package is missing {PLUGIN_JAR}",
+            detail=f"the installed package is missing {plugin_jar}",
         )
     coursier = shutil.which("coursier") or shutil.which("cs")
     if coursier is None:
@@ -112,10 +108,16 @@ def _frontend_command() -> list[str]:
         "launch",
         SMITHY_CLI_COORDINATE,
         SMITHY_JSONSCHEMA_COORDINATE,
+        SMITHY_CODEGEN_CORE_COORDINATE,
         "--extra-jars",
-        str(PLUGIN_JAR),
+        str(plugin_jar),
         "--",
     ]
+
+
+def _frontend_command() -> list[str]:
+    """Resolve the production command using the plugin bundled with this package."""
+    return smithy_build_command()
 
 
 def _service_id(model: dict[str, Any], requested: str | None) -> str | None:

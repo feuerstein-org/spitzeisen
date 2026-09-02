@@ -1,6 +1,6 @@
 {% set vendor_name = client.vendor | replace("_", " ") | replace("-", " ") | title -%}
 """
-Public exports for the {{ vendor_name }} SDK.
+Public exports for the {{ vendor_name | py_doc }} SDK.
 
 Created once by spitzeisen-gen and safe to customize.
 """

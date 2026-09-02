@@ -8,7 +8,7 @@ tool under its Apache-2.0 license. The artifact and its transitive dependencies 
 Coursier and retain their own package metadata and licenses.
 
 The workflow also launches the official
-[Smithy CLI](https://github.com/smithy-lang/smithy) version 1.72.0 as an external tool under its
+[Smithy CLI](https://github.com/smithy-lang/smithy) version 1.73.0 as an external tool under its
 Apache-2.0 license. Its artifact and transitive dependencies are resolved by Coursier and retain
 their own package metadata and licenses.
 

@@ -23,6 +23,8 @@ jobs:
         run: mise run lint-ci
       - name: Check the generated sync tree is not out of date
         run: mise run check-sync-ci
+      - name: Build the Smithy frontend and check its bundled JAR
+        run: mise run check-codegen-frontend-ci
       - name: Check the generated example SDK is not out of date
         run: mise run check-codegen-ci
       - name: Pre-commit

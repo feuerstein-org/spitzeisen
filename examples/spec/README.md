@@ -11,4 +11,4 @@ SDK naming, JSON-only behaviour, and the `units` default as Smithy traits to the
 
 `native-weather.smithy` is independent of those OpenAPI fixtures. It exercises the intended
 Smithy-first path with required fields, nested structures, an enum, documentation, numeric and
-length constraints, an HTTP label, and a Spitzeisen operation trait.
+length constraints, an HTTP label, portable not-found policy, and a Python presentation override.

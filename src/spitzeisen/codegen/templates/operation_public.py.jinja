@@ -6,4 +6,4 @@ from {{ package }}.{{ folder }}._generated.{{ operation.key }} import {{ prefix 
 # This file is created once by spitzeisen-gen and is safe to customize.
 
 class {{ prefix }}{{ operation.class_name }}({{ prefix }}{{ operation.class_name }}Base):
-    """{{ operation.summary or "Access the " ~ operation_name ~ " API." }}"""
+    """{{ (operation.summary or "Access the " ~ operation_name ~ " API.") | py_doc }}"""

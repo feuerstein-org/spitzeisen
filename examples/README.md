@@ -13,11 +13,10 @@ spec/native-weather.smithy       standalone Smithy-first model used by the nativ
 weather_sdk/models/_generated.py regenerated schema-derived models
 weather_sdk/models/_exports.py   regenerated public schema export map
 weather_sdk/__init__.py          create-once root client/model export facade
-weather_sdk/models/current_weather.py create-once public model with a custom validator
+weather_sdk/models/current_weather_response.py create-once public model with a custom validator
 weather_sdk/*/_generated/*.py    regenerated operation and aggregate-client bases
 weather_sdk/_async/*.py          create-once public async extension classes
 weather_sdk/_sync/*.py           create-once public sync extension classes
-weather_sdk/__init__.py          handwritten package exports
 demo.py                          offline end-to-end usage through FakeRouter
 ```
 
@@ -31,19 +30,19 @@ mise run demo-example
 
 `codegen` projects the compatible OpenAPI 3.1 document to 3.0, imports it with pinned
 `smithy-translate`, assembles `weather.smithy` with the converted model using the official Smithy
-CLI, parses the Smithy JSON AST, generates Pydantic models from the original schema, and writes both
-operation surfaces in one transaction. No intermediate is kept as a second source of truth. Run
-`mise run import-openapi` to write that intermediate under `spec/generated/` when it is useful to
-inspect.
+CLI, runs the target-neutral `spitzeisen-service-plan` frontend, lowers the resulting ServicePlan in
+Python, generates Pydantic models from the original schema, and writes both operation surfaces in
+one transaction. No intermediate is kept as a second source of truth. Run `mise run import-openapi`
+to write the assembled Smithy JSON under `spec/generated/` when it is useful to inspect.
 
 Files named or nested under `_generated` are replaced on every run. The root package facade and
 public model, operation, and client modules are created only when absent, so adding custom SDK
 exports or behaviour there is safe. Starting with no `weather_sdk` directory recreates the entire
 importable package, including `weather_sdk/__init__.py`. After that initial scaffold,
-`models/current_weather.py` demonstrates customization with a validator requiring a successful
-observation to contain at least one weather condition. The check task verifies generated models,
-replaceable operation/client bases, public exports, and the presence of every public extension
-module.
+`models/current_weather_response.py` demonstrates customization with a validator requiring a
+successful observation to contain at least one weather condition. The check task verifies generated
+models, replaceable operation/client bases, public exports, and the presence of every public
+extension module.
 
 Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
 remain wire-only, and unknown response members are ignored for forward compatibility.

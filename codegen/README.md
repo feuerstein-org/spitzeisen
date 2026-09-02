@@ -1,20 +1,65 @@
 # Spitzeisen Smithy codegen
 
-This Gradle build contains Spitzeisen's production Smithy semantic frontend. It follows Smithy's
-standard plugin layout while the project continues to expose a Python runtime and Python SDK
-renderer.
+This Gradle build contains Spitzeisen's production target-neutral Smithy frontend. Python remains
+the first target runtime and owns its generation context, symbol provider, protocol handlers,
+integrations, lowering, source renderer, and Pydantic backend.
 
 `spitzeisen-smithy-codegen`
-: A Java SPI `SmithyBuildPlugin` named `spitzeisen-python-client-codegen`. It consumes Smithy's
-  validated semantic `Model`, uses the standard knowledge indexes, and writes a versioned
-  `client-plan.json` plus a response-model `model-schema.json` through Smithy's `FileManifest`.
+: Provides the Java SPI class `SpitzeisenServicePlanPlugin`, registered with Smithy Build as
+  `spitzeisen-service-plan`. It accepts only an optional service ShapeId, prepares Smithy's semantic
+  `Model`, uses official knowledge indexes, and writes flat, unversioned `service-plan.json` plus
+  a temporary native-model `model-schema.json` sidecar through `FileManifest`.
 
 `spitzeisen-smithy-codegen-test`
-: A normal Smithy Build project that exercises plugin discovery, projections, transforms, bundled
-  custom trait definitions, native-weather generation, and the full custom policy surface.
+: A normal Smithy Build project that exercises plugin discovery, projections, preparation
+  transforms, bundled traits, native-weather generation, exact service semantics, and the custom
+  policy surface.
 
-The Gradle wrapper pins the build tool. Java dependencies are pinned in `gradle/libs.versions.toml`
-and deliberately match the Smithy version used by the existing Python orchestrator.
+The ServicePlan root contains `service`, ShapeId-keyed `operations`, ShapeId-keyed `shapes`, and
+`extensions`. It preserves exact Smithy types, relationships, defaults, constraints, protocols,
+auth, errors, event streams, pagination, and HTTP bindings. Portable `spitzeisen.api` traits are
+normalized as policies; raw `spitzeisen.python` traits are carried as extensions. Java performs no
+Python naming, type mapping, coercion rendering, Pydantic configuration, or Python capability
+checks.
+
+The bundled traits are split between:
+
+- `spitzeisen-api.smithy`: portable `result`, `notFound`, `rateLimitCost`,
+  `pageNumberPagination`, `sorting`, `queryEncoding`, `clientDefault`, `excludeOperation`,
+  `excludeParameter`, and `inputAdapter` policy;
+- `spitzeisen-python.smithy`: minimal Python `operation`, `parameter`, and `modelField` naming and
+  layout overrides; and
+- `spitzeisen-protocols.smithy`: the target-neutral `genericRestJson` protocol for ordinary HTTP
+  APIs with generic JSON document bodies.
+
+Standard Smithy traits remain authoritative for documentation, defaults, enums, ranges, HTTP,
+pagination, auth, errors, and event streams. Existing Python models and adapter implementations are
+selected through the CLI's strict `--python-settings` JSON document and decoded into
+`PythonSettings`, rather than encoded as target-specific Smithy type or function strings.
+
+The Python pipeline strictly loads ServicePlan, explicitly enables integrations, builds a
+`PythonGenerationContext`, resolves its `PythonSymbolProvider` and declared protocol handler,
+then calls `lower_service_plan` to produce a renderer-ready `PythonPlan`. Unsupported
+Python features fail in that lowerer, leaving the neutral Java artifact usable by another target.
+The built-in registry handles `spitzeisen.protocols#genericRestJson` and
+`aws.protocols#restJson1`.
+
+The Gradle wrapper pins the build tool. Shared Java and Smithy versions live in
+`src/spitzeisen/codegen/smithy/toolchain.properties`, which Gradle and the Python launcher both
+read. Lockfiles and SHA-256 verification metadata make the build dependency graph reproducible and
+verified.
+
+Run all Python and Java lint checks from the repository root:
+
+```console
+mise run lint
+```
+
+`mise run lint-fix` also applies the Java formatter. To format only the Java frontend:
+
+```console
+./codegen/gradlew -p codegen :spitzeisen-smithy-codegen:spotlessApply
+```
 
 Run the Java unit and Smithy integration tests:
 
@@ -22,22 +67,23 @@ Run the Java unit and Smithy integration tests:
 ./codegen/gradlew -p codegen build
 ```
 
-Build and copy the reproducible runtime JAR into the Python package:
+Build and copy the reproducible `spitzeisen-service-plan.jar` into the Python package:
 
 ```console
 mise run install-codegen-frontend
 ```
 
-Run the complete frontend verification from the repository root:
+Run the complete frontend verification:
 
 ```console
 mise run smithy-java-spike
 ```
 
-That task checks native Smithy, the real weather OpenAPI fixture, and a policy-complete Smithy
-fixture through both direct Smithy Build and the packaged launcher. It renders Python and Pydantic
-modules and imports the generated packages.
+That task compares direct Smithy Build output with the packaged launcher for native Smithy, the real
+weather OpenAPI fixture, and a policy-complete fixture. It verifies `service-plan.json`, the
+temporary model-schema sidecar, Python lowering, rendered Jinja/Pydantic modules, generated package
+imports, and the reproducible bundled artifact.
 
-The Python CLI launches this plugin through pinned Smithy Build coordinates and deserializes its
-versioned plan. The generated JSON plan is an internal temporary artifact, not a user-maintained
-manifest; Smithy models and traits remain the source of truth.
+The ServicePlan and model schema are internal temporary artifacts, not user-maintained manifests.
+Smithy models and traits remain the source of truth; generated implementation modules are checked
+for drift, and create-once public extension modules remain untouched on regeneration.

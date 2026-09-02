@@ -1,6 +1,6 @@
 """Param coercion: the helpers that turn user arguments into wire values."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Literal, assert_type, cast
 
 import pytest
@@ -11,7 +11,10 @@ from spitzeisen import (
     coerce_choices,
     coerce_date,
     coerce_sort,
+    coerce_timestamp,
+    coerce_timestamps,
     require_value,
+    serialize_path_param,
     serialize_query_param,
 )
 from spitzeisen.params import QueryStyle, SerializedQueryParam
@@ -50,9 +53,14 @@ def test_require_value_rejects_none() -> None:
         require_value(None, "exchange")
 
 
-def test_coerce_choices_joins_into_a_csv_filter() -> None:
-    """Multi-value filters go on the wire comma-separated."""
-    assert coerce_choices(["red", "blue"], Colour, "colours") == "red,blue"
+def test_coerce_choices_preserves_values_for_independent_wire_serialization() -> None:
+    """Choice validation does not override the modeled query style or explode setting."""
+    choices = coerce_choices(["red", "blue"], Colour, "colours")
+
+    assert choices == ["red", "blue"]
+    assert serialize_query_param(choices, name="colour", style="pipeDelimited", explode=False) == [
+        SerializedQueryParam("colour", "red|blue"),
+    ]
 
 
 @pytest.mark.parametrize("empty", [None, []])
@@ -70,6 +78,11 @@ def test_coerce_choices_reports_every_invalid_member() -> None:
 def test_coerce_sort_builds_the_suffix_form_without_imposing_vendor_values() -> None:
     """The combiner accepts the direction vocabulary already validated for this vendor."""
     assert coerce_sort("name", "upward") == "name.upward"
+
+
+def test_coerce_sort_honors_the_modeled_separator() -> None:
+    """Suffix sorting keeps the separator declared by portable Smithy policy."""
+    assert coerce_sort("name", "upward", separator=":") == "name:upward"
 
 
 def test_coerce_sort_rejects_an_empty_component() -> None:
@@ -98,6 +111,47 @@ def test_coerce_date_rejects_a_non_iso_string() -> None:
         coerce_date("31/01/2025", "since")
 
 
+def test_coerce_timestamp_serializes_every_smithy_wire_format() -> None:
+    """Timestamp coercion normalizes to UTC, truncates to milliseconds, and selects exact syntax."""
+    value = datetime(2025, 1, 31, 16, 30, 45, 123_987, tzinfo=timezone(timedelta(hours=2)))
+
+    assert coerce_timestamp(value, "date-time", "at") == "2025-01-31T14:30:45.123Z"
+    assert coerce_timestamp(value, "http-date", "at") == "Fri, 31 Jan 2025 14:30:45 GMT"
+    assert coerce_timestamp(value, "epoch-seconds", "at") == "1738333845.123"
+
+
+def test_coerce_timestamp_handles_negative_epoch_milliseconds() -> None:
+    """Pre-epoch values retain their sign and millisecond precision without float rounding."""
+    value = datetime(1969, 12, 31, 23, 59, 59, 999_999, tzinfo=UTC)
+
+    assert coerce_timestamp(value, "epoch-seconds", "at") == "-0.001"
+
+
+def test_coerce_timestamp_rejects_naive_datetime() -> None:
+    """A timezone-free datetime is ambiguous and must not silently acquire the host timezone."""
+    with pytest.raises(ValueError, match="must include a timezone"):
+        coerce_timestamp(datetime(2025, 1, 31), "date-time", "at")
+
+
+def test_coerce_timestamp_rejects_non_datetime_values() -> None:
+    """Timestamp coercion cannot accidentally stringify a value of the wrong public type."""
+    with pytest.raises(TypeError, match="Expected a datetime"):
+        coerce_timestamp(cast("datetime", "2025-01-31T00:00:00Z"), "date-time", "at")
+
+
+def test_coerce_timestamps_preserves_collection_serialization_as_a_separate_step() -> None:
+    """A timestamp list can still use the binding's modeled query style and explode setting."""
+    values = coerce_timestamps(
+        [datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 1, 2, tzinfo=UTC)],
+        "date-time",
+        "at",
+    )
+
+    assert serialize_query_param(values, name="at", explode=False) == [
+        SerializedQueryParam("at", "2025-01-01T00:00:00.000Z,2025-01-02T00:00:00.000Z"),
+    ]
+
+
 def test_serialize_query_param_drops_none_and_normalizes_scalars() -> None:
     """None disappears and scalar values are normalized into one ordered param list."""
     params = [
@@ -105,7 +159,10 @@ def test_serialize_query_param_drops_none_and_normalizes_scalars() -> None:
         *serialize_query_param(value=True, name="active"),
         *serialize_query_param(value=False, name="inactive"),
         *serialize_query_param(date(2025, 1, 31), name="since"),
-        *serialize_query_param(datetime(2025, 1, 31, 14, 30), name="at"),
+        *serialize_query_param(
+            coerce_timestamp(datetime(2025, 1, 31, 14, 30, tzinfo=UTC), "date-time", "at"),
+            name="at",
+        ),
         *serialize_query_param(100, name="limit"),
     ]
 
@@ -113,7 +170,7 @@ def test_serialize_query_param_drops_none_and_normalizes_scalars() -> None:
         SerializedQueryParam("active", "true"),
         SerializedQueryParam("inactive", "false"),
         SerializedQueryParam("since", "2025-01-31"),
-        SerializedQueryParam("at", "2025-01-31"),
+        SerializedQueryParam("at", "2025-01-31T14:30:00.000Z"),
         SerializedQueryParam("limit", "100"),
     ]
 
@@ -164,6 +221,19 @@ def test_serialize_query_param_rejects_a_required_empty_array() -> None:
         serialize_query_param([], name="symbol", required=True)
 
 
+def test_serialize_path_param_distinguishes_greedy_and_non_greedy_labels() -> None:
+    """Smithy URI labels percent-encode reserved characters unless the label is greedy."""
+    value = "folders/2026 report#final"
+
+    assert serialize_path_param(value) == "folders%2F2026%20report%23final"
+    assert serialize_path_param(value, greedy=True) == "folders/2026%20report%23final"
+
+
 def test_build_header_params_keeps_header_values_scalar() -> None:
     """Headers continue to use a simple name/value mapping, unlike query strings."""
     assert build_header_params({"X-Active": True, "absent": None}) == {"X-Active": "true"}
+
+
+def test_build_header_params_joins_collection_bindings() -> None:
+    """Smithy header collection members serialize as one comma-separated HTTP field value."""
+    assert build_header_params({"X-Values": ["one", "two"]}) == {"X-Values": "one,two"}
