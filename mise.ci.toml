@@ -31,7 +31,7 @@ run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay ex
 description = "Build the Java frontend and fail if its bundled JAR is stale (CI only)"
 run = [
     "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:check :spitzeisen-smithy-codegen-test:smithyBuild :spitzeisen-smithy-codegen:installRuntimeJar",
-    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-service-plan.jar",
+    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-python-codegen.jar",
 ]
 
 [tasks.pre-commit-ci]

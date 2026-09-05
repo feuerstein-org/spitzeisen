@@ -10,7 +10,9 @@
         {
           "name": "includeServices",
           "args": {
-            "services": ["native.weather#WeatherService"]
+            "services": [
+              "native.weather#WeatherService"
+            ]
           }
         },
         {
@@ -18,8 +20,10 @@
         }
       ],
       "plugins": {
-        "spitzeisen-service-plan": {
-          "service": "native.weather#WeatherService"
+        "spitzeisen-python-client-codegen": {
+          "service": "native.weather#WeatherService",
+          "package": "weather_sdk",
+          "client_name": "Client"
         }
       }
     },
@@ -28,7 +32,9 @@
         {
           "name": "includeServices",
           "args": {
-            "services": ["policy.example#ExampleService"]
+            "services": [
+              "policy.example#ExampleService"
+            ]
           }
         },
         {
@@ -36,8 +42,46 @@
         }
       ],
       "plugins": {
-        "spitzeisen-service-plan": {
-          "service": "policy.example#ExampleService"
+        "spitzeisen-python-client-codegen": {
+          "service": "policy.example#ExampleService",
+          "package": "policy_sdk",
+          "client_name": "Client",
+          "python": {
+            "input_adapters": {
+              "date": {
+                "function": {
+                  "module": "spitzeisen",
+                  "name": "coerce_date"
+                },
+                "public_type": {
+                  "kind": "date_input"
+                }
+              },
+              "comma-list": {
+                "function": {
+                  "module": "policy_sdk.adapters",
+                  "name": "join_values"
+                },
+                "public_type": {
+                  "kind": "list",
+                  "members": [
+                    {
+                      "kind": "str"
+                    }
+                  ]
+                }
+              },
+              "custom": {
+                "function": {
+                  "module": "policy_sdk.adapters",
+                  "name": "custom"
+                },
+                "public_type": {
+                  "kind": "str"
+                }
+              }
+            }
+          }
         }
       }
     }

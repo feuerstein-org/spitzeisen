@@ -1,4 +1,4 @@
-"""Run Spitzeisen's packaged Smithy Build plugin and load its neutral contract."""
+"""Run the packaged Smithy Python generator and collect its build artifacts."""
 
 from __future__ import annotations
 
@@ -8,38 +8,43 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
+from spitzeisen.codegen.artifacts import ArtifactManifest
 from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE, SMITHY_CLI_VERSION
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.service_plan_io import service_plan_from_document
-
-if TYPE_CHECKING:
-    from spitzeisen.codegen.service_plan import ServicePlan
+from spitzeisen.codegen.generate import GeneratedModule
 
 SMITHY_JSONSCHEMA_COORDINATE = f"software.amazon.smithy:smithy-jsonschema:{SMITHY_CLI_VERSION}"
 SMITHY_CODEGEN_CORE_COORDINATE = f"software.amazon.smithy:smithy-codegen-core:{SMITHY_CLI_VERSION}"
-PLUGIN_NAME = "spitzeisen-service-plan"
-PLUGIN_JAR = Path(__file__).with_name("smithy") / "spitzeisen-service-plan.jar"
+PLUGIN_NAME = "spitzeisen-python-client-codegen"
+PLUGIN_JAR = Path(__file__).with_name("smithy") / "spitzeisen-python-codegen.jar"
 
 
 @dataclass(frozen=True, slots=True)
 class FrontendResult:
     """Outputs emitted by the Java Smithy semantic frontend."""
 
-    service_plan: ServicePlan
+    manifest: ArtifactManifest
+    modules: list[GeneratedModule]
     model_schema: dict[str, Any]
 
 
 def compile_smithy_frontend(
     model: dict[str, Any],
     *,
+    package: str,
+    client_name: str,
+    vendor: str | None = None,
+    python_settings: dict[str, Any] | None = None,
     service: str | None = None,
     working_directory: Path | None = None,
 ) -> FrontendResult:
     """Compile an assembled Smithy model with the packaged production plugin."""
     command = _frontend_command()
-    settings: dict[str, object] = {}
+    settings: dict[str, object] = {"package": package, "client_name": client_name, "python": python_settings or {}}
+    if vendor is not None:
+        settings["vendor"] = vendor
     if service_id := _service_id(model, service):
         settings["service"] = service_id
     config = {
@@ -80,14 +85,24 @@ def compile_smithy_frontend(
             detail = (process.stderr or process.stdout).strip() or (
                 f"Smithy Build exited with status {process.returncode}"
             )
-            raise CodegenError(header="Smithy service-plan compilation failed", detail=detail)
-        plan_document = _load_artifact(artifact_root / "service-plan.json", "service plan")
+            raise CodegenError(header="Smithy Python generation failed", detail=detail)
         model_schema = _load_artifact(artifact_root / "model-schema.json", "model schema")
-    try:
-        service_plan = service_plan_from_document(plan_document)
-    except (TypeError, ValueError) as err:
-        raise CodegenError(header="Smithy frontend emitted an invalid service plan", detail=str(err)) from err
-    return FrontendResult(service_plan=service_plan, model_schema=model_schema)
+        try:
+            manifest = ArtifactManifest.model_validate(_load_artifact(artifact_root / "manifest.json", "manifest"))
+            modules: list[GeneratedModule] = []
+            for filename, create_once in manifest.files.items():
+                relative = Path(filename)
+                source = artifact_root / "sdk" / relative
+                if relative.is_absolute() or ".." in relative.parts or relative.suffix != ".py" or "\\" in filename:
+                    msg = f"invalid generated source path: {filename}"
+                    raise ValueError(msg)  # noqa: TRY301 - translate all artifact failures at this boundary
+                if not source.resolve().is_relative_to((artifact_root / "sdk").resolve()):
+                    msg = f"generated source escapes artifact directory: {filename}"
+                    raise ValueError(msg)  # noqa: TRY301 - translate all artifact failures at this boundary
+                modules.append(GeneratedModule(relative, source.read_text(encoding="utf-8"), create_once))
+        except (OSError, ValueError) as err:
+            raise CodegenError(header="Smithy generator emitted invalid build artifacts", detail=str(err)) from err
+    return FrontendResult(manifest=manifest, modules=modules, model_schema=model_schema)
 
 
 def smithy_build_command(plugin_jar: Path = PLUGIN_JAR) -> list[str]:

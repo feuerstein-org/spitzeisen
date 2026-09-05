@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from plan_fixtures import native_weather_service_plan, things_service_plan
+from codegen_fixtures import frontend_result
 
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.inputs import load_compile_inputs, load_mapping
-from spitzeisen.codegen.java_frontend import FrontendResult
 from spitzeisen.codegen.openapi import ImportedSmithy, project_openapi_for_converter
+
+if TYPE_CHECKING:
+    from spitzeisen.codegen.java_frontend import FrontendResult
 
 
 def openapi_document(*, version: str = "3.1.0", paths: dict[str, object] | None = None) -> dict[str, Any]:
@@ -94,24 +96,27 @@ def test_openapi_pipeline_passes_the_assembled_model_to_java(
         *,
         service: str | None,
         working_directory: Path | None,
+        **settings: object,
     ) -> FrontendResult:
         assert model is assembled
+        assert settings["package"] == "test_sdk"
         assert service is None
         assert working_directory == tmp_path
-        return FrontendResult(things_service_plan(), {})
+        return frontend_result()
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
     inputs = load_compile_inputs(
+        package="test_sdk",
+        client_name="Client",
         source=source,
         overlays=(overlay,),
         timeout=5,
     )
 
-    assert inputs.service_plan.service.operations == ("example#GetThings",)
+    assert len(inputs.frontend.modules) == 2
     assert inputs.model_input_type == "openapi"
     assert inputs.model_schema == spec
-    assert inputs.smithy is assembled
     assert not inputs.warnings
 
 
@@ -135,11 +140,13 @@ def test_native_pipeline_uses_the_java_json_schema(
     monkeypatch.setattr("spitzeisen.codegen.inputs.assemble_smithy", assemble)
 
     def compile_frontend(*_args: object, **_kwargs: object) -> FrontendResult:
-        return FrontendResult(native_weather_service_plan(), schema)
+        return frontend_result(schema)
 
     monkeypatch.setattr("spitzeisen.codegen.inputs.compile_smithy_frontend", compile_frontend)
 
     inputs = load_compile_inputs(
+        package="test_sdk",
+        client_name="Client",
         smithy_sources=(source,),
         overlays=(overlay,),
         timeout=5,
@@ -147,5 +154,4 @@ def test_native_pipeline_uses_the_java_json_schema(
 
     assert inputs.model_input_type == "jsonschema"
     assert inputs.model_schema == schema
-    assert inputs.service_plan.service.id == "native.weather#WeatherService"
-    assert inputs.service_plan.operation("native.weather#GetWeather").output == "native.weather#GetWeatherOutput"
+    assert inputs.frontend == frontend_result(schema)

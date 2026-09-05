@@ -178,14 +178,13 @@ settings file contains only Python target choices:
       "public_type": {"kind": "date_input"}
     }
   },
-  "protocol_preference": ["spitzeisen.protocols#genericRestJson"],
-  "enabled_integrations": []
+  "protocol_preference": ["spitzeisen.protocols#genericRestJson"]
 }
 ```
 
 Keys in `external_models` are response ShapeIds; keys in `input_adapters` match the stable IDs used
-by `spitzeisen.api#inputAdapter`. The decoder rejects unknown fields, malformed imports, duplicate
-selections, and invalid type descriptors before lowering. Omit the file when the built-in symbol
+by `spitzeisen.api#inputAdapter`. Java rejects unknown fields, malformed imports,
+and invalid type descriptors before generation. Omit the file when the built-in symbol
 and protocol choices are sufficient.
 
 Use `--url` instead of `--path` to fetch an OpenAPI document. Native `--smithy` inputs and OpenAPI
@@ -195,26 +194,16 @@ well as operations. A runnable native model is available at
 architecture and file-by-file responsibilities are documented in
 [docs/codegen-architecture.md](docs/codegen-architecture.md).
 
-The production semantic frontend is the Java Smithy Build plugin `spitzeisen-service-plan`. It
-emits an internal `service-plan.json` containing exact Smithy shape kinds, ShapeId relationships,
-HTTP bindings, defaults, constraints, protocols, auth, errors, pagination, and portable policies.
-It contains no Python identifiers, annotations, imports, or renderer decisions.
+The Java Smithy Build plugin `spitzeisen-python-client-codegen` directly emits Python operations,
+aggregate clients, and public extension scaffolds using Smithy's symbol and writer infrastructure.
+It passes Python generated files plus a small model-build manifest, not a runtime-neutral plan or
+a Python rendering plan. Python retains the Pydantic backend, source formatting, and file management.
+One explicit model-name mapping keeps service renames and generated imports consistent.
 
-Python loads that ServicePlan, creates a generation context, activates only explicitly configured
-integrations, resolves a target symbol provider and protocol handler, and lowers the result into a
-renderer-ready `PythonPlan`. Target capability checks also happen there: the neutral plan can
-represent methods, bodies, event streams, and standard pagination that the current Python runtime
-does not yet support. Jinja and Ruff consume the Python plan; the model coordinator combines its
-generated-model choices with the schema backend input. The temporary `model-schema.json` sidecar
-remains for native Pydantic generation, while OpenAPI generation continues to use the original
-vendor schema.
-
-The reproducible `spitzeisen-service-plan.jar` is bundled with the Python package, so generation
-invokes the same pinned Smithy toolchain from a source checkout or an installed wheel. Run
-`mise run smithy-java-spike` for the frontend regression suite, including native Smithy, the real
-weather OpenAPI import, result selection, pagination, sorting, query encoding, client defaults,
-adapter IDs, and Python naming overrides. The implementation boundary is documented in
-[`docs/java-smithy-frontend-spike.md`](docs/java-smithy-frontend-spike.md).
+The reproducible `spitzeisen-python-codegen.jar` is bundled with the Python package. Run
+`mise run verify-codegen` to build it and execute native Smithy and imported OpenAPI SDK tests.
+Future runtime targets can be separate Java Smithy Build plugins sharing the semantic model and
+portable policies. No Rust implementation is included yet.
 
 To inspect the exact intermediate model consumed by the frontend:
 
@@ -252,7 +241,8 @@ example_api/
 
 The root package facade and public model, operation, and client files can remain as scaffolded or
 carry SDK-specific exports, validators, and behaviour. Running generation again preserves them
-while updating the `_generated` bases. Deleting the output package and generating from scratch
+while updating the `_generated` bases and `_exports.py` facades. Deleting the output package and
+generating from scratch
 recreates every required `__init__.py`, including the root facade that exports both clients and
 generated response models. The aggregate client shares one config across its operation properties
 and owns their context-manager lifecycle:
@@ -312,14 +302,14 @@ A client needing shared behaviour can still provide a base derived from `Spitzei
 select it with `spitzeisen-gen generate --base-class my_client.model_base.ClientModel`. An entirely
 handwritten response type is registered by response ShapeId under `external_models` in the
 `--python-settings` file; its module, symbol, and dependencies remain Python target configuration
-and never enter ServicePlan.
+and are validated by the Java target.
 
 Generated GET operations implement a constrained generic HTTP/JSON profile. Smithy delegates
 collection query serialization to the protocol selected from the service's declared traits, and
 arbitrary vendor APIs are not assumed to be AWS `restJson1`. Set
 `spitzeisen.api#queryEncoding(style: ..., explode: ..., allowReserved: ...)` on the input member
 when the vendor uses `spaceDelimited`, `pipeDelimited`, or repeated values. `deepObject` and
-`allowReserved: true` are preserved in ServicePlan but not yet supported by the Python target.
+`allowReserved: true` are rejected by the current Python target.
 Nonstandard caller-input conversions use portable `spitzeisen.api#inputAdapter(id: ...)`; the
 Python target resolves that stable ID through `input_adapters` in the `--python-settings` file to a
 public type and an exact function import.
@@ -400,7 +390,7 @@ apply ListThings @sorting(
 )
 ```
 
-The Python lowerer splits that closed wire enum into `sort` and `order` Literal arguments.
+The Java Python generator splits that closed wire enum into `sort` and `order` Literal arguments.
 Spitzeisen does not impose direction names such as `asc` and `desc`.
 
 ## License

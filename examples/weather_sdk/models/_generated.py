@@ -10,160 +10,160 @@ from spitzeisen import SpitzeisenModel
 
 
 class Clouds(SpitzeisenModel):
-    all: Annotated[int, Field(ge=0, le=100)]
+    all: Annotated[int, Field(alias="all", ge=0, le=100)]
     """
     Cloudiness percentage.
     """
 
 
 class Coordinates(SpitzeisenModel):
-    lon: Annotated[float, Field(ge=-180.0, le=180.0)]
+    lon: Annotated[float, Field(alias="lon", ge=-180.0, le=180.0)]
     """
     Longitude of the location.
     """
-    lat: Annotated[float, Field(ge=-90.0, le=90.0)]
+    lat: Annotated[float, Field(alias="lat", ge=-90.0, le=90.0)]
     """
     Latitude of the location.
     """
 
 
 class PrecipitationVolume(SpitzeisenModel):
-    field_1h: Annotated[float, Field(alias="1h")]
+    n1h: Annotated[float, Field(alias="1h")]
     """
     Precipitation volume for the preceding hour in mm/h.
     """
 
 
 class SystemMetadata(SpitzeisenModel):
-    type: int | None = None
+    type_: Annotated[int | None, Field(alias="type")] = None
     """
     Internal parameter.
     """
-    id: int | None = None
+    id: Annotated[int | None, Field(alias="id")] = None
     """
     Internal parameter.
     """
-    message: float | None = None
+    message: Annotated[float | None, Field(alias="message")] = None
     """
     Internal parameter present in some responses.
     """
-    country: str
+    country: Annotated[str, Field(alias="country")]
     """
     Country code.
     """
-    sunrise: int
+    sunrise: Annotated[int, Field(alias="sunrise")]
     """
     Sunrise time as a Unix timestamp in UTC.
     """
-    sunset: int
+    sunset: Annotated[int, Field(alias="sunset")]
     """
     Sunset time as a Unix timestamp in UTC.
     """
 
 
 class WeatherCondition(SpitzeisenModel):
-    id: int
+    id: Annotated[int, Field(alias="id")]
     """
     Weather condition identifier.
     """
-    main: str
+    main: Annotated[str, Field(alias="main")]
     """
     Weather condition group, such as Rain, Snow, or Clouds.
     """
-    description: str
+    description: Annotated[str, Field(alias="description")]
     """
     Weather condition within the group.
     """
-    icon: str
+    icon: Annotated[str, Field(alias="icon")]
     """
     Weather icon identifier.
     """
 
 
 class WeatherMeasurements(SpitzeisenModel):
-    temp: float
+    temp: Annotated[float, Field(alias="temp")]
     """
     Current temperature.
     """
-    feels_like: float
+    feels_like: Annotated[float, Field(alias="feels_like")]
     """
     Temperature adjusted for human perception.
     """
-    temp_min: float | None = None
+    temp_min: Annotated[float | None, Field(alias="temp_min")] = None
     """
     Optional minimum currently observed temperature within the location.
     """
-    temp_max: float | None = None
+    temp_max: Annotated[float | None, Field(alias="temp_max")] = None
     """
     Optional maximum currently observed temperature within the location.
     """
-    pressure: int
+    pressure: Annotated[int, Field(alias="pressure")]
     """
     Atmospheric pressure at sea level in hPa.
     """
-    humidity: Annotated[int, Field(ge=0, le=100)]
+    humidity: Annotated[int, Field(alias="humidity", ge=0, le=100)]
     """
     Humidity percentage.
     """
-    sea_level: int | None = None
+    sea_level: Annotated[int | None, Field(alias="sea_level")] = None
     """
     Atmospheric pressure at sea level in hPa, where available.
     """
-    grnd_level: int | None = None
+    grnd_level: Annotated[int | None, Field(alias="grnd_level")] = None
     """
     Atmospheric pressure at ground level in hPa, where available.
     """
 
 
 class Wind(SpitzeisenModel):
-    speed: float
+    speed: Annotated[float, Field(alias="speed")]
     """
     Wind speed in units selected by the request.
     """
-    deg: int
+    deg: Annotated[int, Field(alias="deg")]
     """
     Meteorological wind direction in degrees.
     """
-    gust: float | None = None
+    gust: Annotated[float | None, Field(alias="gust")] = None
     """
     Wind gust speed, where available.
     """
 
 
 class CurrentWeatherResponse(SpitzeisenModel):
-    coord: Coordinates
-    weather: list[WeatherCondition]
-    base: str | None = None
+    coord: Annotated[Coordinates, Field(alias="coord")]
+    weather: Annotated[list[WeatherCondition], Field(alias="weather")]
+    base: Annotated[str | None, Field(alias="base")] = None
     """
     Internal parameter.
     """
-    main: WeatherMeasurements
-    visibility: int | None = None
+    main: Annotated[WeatherMeasurements, Field(alias="main")]
+    visibility: Annotated[int | None, Field(alias="visibility")] = None
     """
     Visibility in metres, with a maximum reported value of 10 km.
     """
-    wind: Wind | None = None
-    rain: PrecipitationVolume | None = None
-    snow: PrecipitationVolume | None = None
-    clouds: Clouds | None = None
-    dt: int
+    wind: Annotated[Wind | None, Field(alias="wind")] = None
+    rain: Annotated[PrecipitationVolume | None, Field(alias="rain")] = None
+    snow: Annotated[PrecipitationVolume | None, Field(alias="snow")] = None
+    clouds: Annotated[Clouds | None, Field(alias="clouds")] = None
+    dt: Annotated[int, Field(alias="dt")]
     """
     Time of data calculation as a Unix timestamp in UTC.
     """
-    sys: SystemMetadata | None = None
-    timezone: int
+    sys: Annotated[SystemMetadata | None, Field(alias="sys")] = None
+    timezone: Annotated[int, Field(alias="timezone")]
     """
     Shift in seconds from UTC.
     """
-    id: int
+    id: Annotated[int, Field(alias="id")]
     """
     City identifier.
     """
-    name: str
+    name: Annotated[str, Field(alias="name")]
     """
     City name.
     """
-    cod: int
+    cod: Annotated[int, Field(alias="cod")]
     """
     Internal response status code.
     """

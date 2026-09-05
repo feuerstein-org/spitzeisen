@@ -1,1 +1,1 @@
-"""Asynchronous generated implementation, do not edit."""
+"""Generated implementation. Do not edit."""

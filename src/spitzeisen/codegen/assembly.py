@@ -16,7 +16,7 @@ from spitzeisen.codegen.toolchain import SMITHY_VERSION
 
 SMITHY_CLI_VERSION = SMITHY_VERSION
 SMITHY_CLI_COORDINATE = f"software.amazon.smithy:smithy-cli:{SMITHY_CLI_VERSION}"
-TRAIT_BUNDLE = Path(__file__).with_name("smithy") / "spitzeisen-service-plan.jar"
+TRAIT_BUNDLE = Path(__file__).with_name("smithy") / "spitzeisen-python-codegen.jar"
 
 
 def _assembler_command() -> list[str]:
