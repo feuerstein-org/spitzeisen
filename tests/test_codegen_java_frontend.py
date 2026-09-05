@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from plan_fixtures import native_weather_service_plan
+from codegen_fixtures import frontend_result
 
 from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE
 from spitzeisen.codegen.exceptions import CodegenError
@@ -16,18 +16,9 @@ from spitzeisen.codegen.java_frontend import (
     PLUGIN_NAME,
     SMITHY_CODEGEN_CORE_COORDINATE,
     SMITHY_JSONSCHEMA_COORDINATE,
-    FrontendResult,
     compile_smithy_frontend,
     smithy_build_command,
 )
-from spitzeisen.codegen.service_plan_io import service_plan_document
-
-
-def _expected() -> FrontendResult:
-    return FrontendResult(
-        service_plan=native_weather_service_plan(),
-        model_schema={"$defs": {"Weather": {"type": "object"}}},
-    )
 
 
 def _model() -> dict[str, Any]:
@@ -42,7 +33,7 @@ def test_frontend_launcher_includes_every_thin_plugin_runtime_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The bundled JAR stays reproducible and thin, so Coursier supplies its Smithy libraries."""
-    plugin = tmp_path / "spitzeisen-service-plan.jar"
+    plugin = tmp_path / "spitzeisen-python-codegen.jar"
     plugin.touch()
 
     def find_coursier(name: str) -> str | None:
@@ -65,12 +56,12 @@ def test_frontend_launcher_includes_every_thin_plugin_runtime_dependency(
     ]
 
 
-def test_frontend_runs_smithy_build_and_loads_neutral_artifacts(
+def test_frontend_runs_smithy_build_and_loads_source_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The process wrapper passes only service selection and consumes both plugin outputs."""
-    expected = _expected()
+    """The process wrapper passes target settings and collects generated files and model metadata."""
+    expected = frontend_result({"$defs": {"Weather": {"type": "object"}}})
     monkeypatch.setattr("spitzeisen.codegen.java_frontend._frontend_command", lambda: ["smithy-with-plugin", "--"])
 
     def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -79,10 +70,19 @@ def test_frontend_runs_smithy_build_and_loads_neutral_artifacts(
         config_path = Path(command[command.index("--config") + 1])
         config: dict[str, Any] = json.loads(config_path.read_text())
         settings = config["projections"]["spitzeisen"]["plugins"][PLUGIN_NAME]
-        assert settings == {"service": "native.weather#WeatherService"}
+        assert settings == {
+            "service": "native.weather#WeatherService",
+            "package": "test_sdk",
+            "client_name": "Client",
+            "python": {},
+        }
         artifacts = output / "spitzeisen" / PLUGIN_NAME
         artifacts.mkdir(parents=True)
-        (artifacts / "service-plan.json").write_text(json.dumps(service_plan_document(expected.service_plan)))
+        (artifacts / "manifest.json").write_text(expected.manifest.model_dump_json())
+        for module in expected.modules:
+            path = artifacts / "sdk" / module.path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(module.source)
         (artifacts / "model-schema.json").write_text(json.dumps(expected.model_schema))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
@@ -90,6 +90,8 @@ def test_frontend_runs_smithy_build_and_loads_neutral_artifacts(
 
     actual = compile_smithy_frontend(
         _model(),
+        package="test_sdk",
+        client_name="Client",
         service="WeatherService",
         working_directory=tmp_path,
     )
@@ -113,6 +115,8 @@ def test_frontend_reports_smithy_build_errors(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(CodegenError, match="invalid trait"):
         compile_smithy_frontend(
             _model(),
+            package="test_sdk",
+            client_name="Client",
         )
 
 
@@ -123,5 +127,26 @@ def test_frontend_rejects_an_unknown_service_name(monkeypatch: pytest.MonkeyPatc
     with pytest.raises(CodegenError, match=r"absent or ambiguous.*WeatherService"):
         compile_smithy_frontend(
             _model(),
+            package="test_sdk",
+            client_name="Client",
             service="RemovedWeatherService",
         )
+
+
+@pytest.mark.parametrize("filename", ["../escaped.py", "/absolute.py", "bad\\path.py", "not_python.txt"])
+def test_frontend_rejects_invalid_source_paths(monkeypatch: pytest.MonkeyPatch, filename: str) -> None:
+    """A corrupt build manifest cannot read outside the Java artifact directory."""
+    monkeypatch.setattr("spitzeisen.codegen.java_frontend._frontend_command", lambda: ["smithy"])
+
+    def run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output = Path(command[command.index("--output") + 1]) / "spitzeisen" / PLUGIN_NAME
+        output.mkdir(parents=True)
+        manifest = frontend_result().manifest
+        manifest.files = {filename: False}
+        (output / "manifest.json").write_text(manifest.model_dump_json())
+        (output / "model-schema.json").write_text("{}")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("spitzeisen.codegen.java_frontend.subprocess.run", run)
+    with pytest.raises(CodegenError, match="invalid generated source path"):
+        compile_smithy_frontend(_model(), package="test_sdk", client_name="Client")

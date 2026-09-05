@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from pprint import pformat
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -23,25 +23,20 @@ from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.generate import (
     GeneratedModule,
-    format_python,
-    generate_plan,
+    formatted_module,
     generated_model_names,
     model_exports_module,
-    prune_spec,
     python_tool,
 )
 from spitzeisen.codegen.inputs import load_compile_inputs, load_document
 from spitzeisen.codegen.java_frontend import PLUGIN_JAR
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.python_lowering import lower_service_plan
-from spitzeisen.codegen.python_settings_io import python_settings_from_document
 from spitzeisen.codegen.toolchain import JAVA_VERSION, SMITHY_VERSION
 
 if TYPE_CHECKING:
+    from spitzeisen.codegen.artifacts import ArtifactManifest
     from spitzeisen.codegen.diagnostics import ModelImportWarning
     from spitzeisen.codegen.inputs import ModelInputType
-    from spitzeisen.codegen.python_context import PythonSettings
-    from spitzeisen.codegen.python_plan import PythonPlan
 
 DEFAULT_MODEL_BASE_CLASS = "spitzeisen.SpitzeisenModel"
 DEFAULT_HTTP_TIMEOUT = 5
@@ -333,7 +328,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
     python_settings: Path | None = typer.Option(
         None,
         "--python-settings",
-        help="JSON file containing Python-only external models, adapters, protocols, and integrations",
+        help="JSON file containing Python-only external models, adapters, and protocol preferences",
     ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
@@ -385,7 +380,7 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
     python_settings: Path | None = typer.Option(
         None,
         "--python-settings",
-        help="JSON file containing Python-only external models, adapters, protocols, and integrations",
+        help="JSON file containing Python-only external models, adapters, and protocol preferences",
     ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
@@ -464,113 +459,83 @@ def normalize_model_header(source: str, input_type: ModelInputType = "openapi") 
 
 
 def _render(config: Config) -> RenderResult:
-    """Compile all inputs and render the complete output tree."""
-    settings = _load_python_settings(config)
+    """Collect Java sources, run Pydantic, and validate the complete tree before writing."""
     inputs = load_compile_inputs(
         source=config.source,
         smithy_sources=config.smithy_sources,
         overlays=config.overlays,
         service=config.service,
+        package=config.package,
+        client_name=config.client_name,
+        vendor=config.vendor,
+        python_settings=_load_python_settings(config),
         timeout=config.http_timeout,
     )
+    manifest = inputs.frontend.manifest
+    _validate_handwritten_models(manifest, config.package, config.output_path)
     try:
-        client = lower_service_plan(inputs.service_plan, settings)
-    except ValueError as err:
-        raise CodegenError(header="Python plan lowering failed", detail=str(err)) from err
-    _validate_handwritten_models(client, config.output_path)
-    try:
-        modules = generate_plan(client, config.output_path)
-    except ValueError as err:
-        raise CodegenError(header="Python source rendering failed", detail=str(err)) from err
-    generated_operations = tuple(operation for operation in client.operations if operation.generate_model)
-    if generated_operations:
-        try:
+        modules = [
+            formatted_module(
+                config.output_path / module.path,
+                module.source,
+                package=config.package,
+                create_once=module.create_once,
+            )
+            for module in inputs.frontend.modules
+        ]
+        model_source = ""
+        generated = [model for model in manifest.models if model.generated]
+        if generated:
             model_source = generate_model_source(
                 schema=inputs.model_schema,
                 input_type=inputs.model_input_type,
                 working_directory=_working_directory(config),
-                client=client,
+                manifest=manifest,
+                package=config.package,
                 package_root=config.output_path,
                 base_class=config.base_class,
                 encoding=config.file_encoding,
             )
-        except subprocess.CalledProcessError as err:
-            detail = (err.stderr or err.stdout or str(err)).strip()
-            raise CodegenError(header="Model generation failed", detail=detail) from err
-        try:
-            generated_names = set(generated_model_names(model_source))
-        except SyntaxError as err:
-            detail = f"the model backend emitted invalid Python: {err.msg} (line {err.lineno})"
-            raise CodegenError(header="Model generation failed", detail=detail) from err
-        missing_models = sorted(
-            operation.model for operation in generated_operations if operation.model not in generated_names
-        )
-        if missing_models:
-            raise CodegenError(
-                detail=(
-                    f"the model backend did not generate response models {missing_models}; "
-                    "check response schema titles or configure those response ShapeIds in "
-                    "Python target settings under external_models"
-                ),
-            )
-        modules.append(GeneratedModule(config.output_path / "models" / "_generated.py", model_source))
-        modules.append(model_exports_module(client, config.output_path, model_source))
-    else:
-        modules.append(model_exports_module(client, config.output_path, ""))
+            names = set(generated_model_names(model_source))
+            missing = sorted(model.name for model in generated if model.name not in names)
+            if missing:
+                raise CodegenError(detail=f"the model backend did not generate response models {missing}")
+            modules.append(GeneratedModule(config.output_path / "models" / "_generated.py", model_source))
+        modules.append(model_exports_module(config.package, manifest.models, config.output_path, model_source))
+    except subprocess.CalledProcessError as err:
+        detail = (err.stderr or err.stdout or str(err)).strip()
+        raise CodegenError(header="Model generation failed", detail=detail) from err
+    except (ValueError, SyntaxError) as err:
+        raise CodegenError(header="Python source generation failed", detail=str(err)) from err
+    if manifest.dependencies:
+        typer.echo("SDK requires these configured dependencies: " + ", ".join(manifest.dependencies))
     return RenderResult(modules=modules, warnings=inputs.warnings)
 
 
-def _validate_handwritten_models(client: PythonPlan, package_root: Path) -> None:
-    """Require configured local external-model modules before rendering imports to them."""
-    missing = [
-        operation
-        for operation in client.operations
-        if not operation.generate_model
-        and (path := _local_module_path(client, package_root, operation.model_module)) is not None
-        and not path.exists()
-    ]
-    if not missing:
-        return
-    paths = [f"{operation.model_module} ({operation.model})" for operation in missing]
-    raise CodegenError(detail=f"configured external response models require existing local modules: {paths}")
+def _validate_handwritten_models(manifest: ArtifactManifest, package: str, package_root: Path) -> None:
+    """Require configured local model modules without importing or executing user code."""
+    missing: list[str] = []
+    for model in manifest.models:
+        if model.generated or not model.module.startswith(f"{package}."):
+            continue
+        path = package_root.joinpath(*model.module.removeprefix(f"{package}.").split("."))
+        if not path.with_suffix(".py").is_file() and not (path / "__init__.py").is_file():
+            missing.append(f"{model.module} ({model.name})")
+    if missing:
+        raise CodegenError(detail=f"configured external response models require existing local modules: {missing}")
 
 
-def _load_python_settings(config: Config) -> PythonSettings:
-    """Load strict Python-only settings without allowing target concerns into ServicePlan."""
-    document: object = {}
-    if config.python_settings_path is not None:
-        try:
-            document = json.loads(config.python_settings_path.read_text(encoding="utf-8"))
-        except OSError as err:
-            raise CodegenError(
-                header="Unable to read Python target settings",
-                detail=f"{config.python_settings_path}: {err}",
-            ) from err
-        except json.JSONDecodeError as err:
-            raise CodegenError(
-                header="Invalid Python target settings",
-                detail=f"{config.python_settings_path}:{err.lineno}:{err.colno}: {err.msg}",
-            ) from err
+def _load_python_settings(config: Config) -> dict[str, Any]:
+    """Load target options; Java validates their contents once against the assembled model."""
+    if config.python_settings_path is None:
+        return {}
     try:
-        return python_settings_from_document(
-            document,
-            package=config.package,
-            client_name=config.client_name,
-            vendor=config.vendor,
-        )
-    except ValueError as err:
+        document: object = json.loads(config.python_settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
         raise CodegenError(header="Invalid Python target settings", detail=str(err)) from err
-
-
-def _local_module_path(client: PythonPlan, package_root: Path, module: str) -> Path | None:
-    """Resolve a module inside the generated package; external modules have no local path."""
-    prefix = f"{client.package}."
-    if not module.startswith(prefix):
-        return None
-    relative = module.removeprefix(prefix)
-    module_path = package_root / Path(*relative.split("."))
-    package_init = module_path / "__init__.py"
-    return package_init if package_init.is_file() else module_path.with_suffix(".py")
+    if not isinstance(document, dict):
+        raise CodegenError(header="Invalid Python target settings", detail="expected a JSON object")
+    return cast("dict[str, Any]", document)
 
 
 def generate_model_source(
@@ -578,7 +543,8 @@ def generate_model_source(
     schema: dict[str, Any],
     input_type: ModelInputType,
     working_directory: Path,
-    client: PythonPlan,
+    manifest: ArtifactManifest,
+    package: str,
     package_root: Path,
     base_class: str,
     encoding: str,
@@ -589,9 +555,15 @@ def generate_model_source(
         extra += ["--openapi-scopes", "paths"]
     else:
         extra += ["--skip-root-model", "--collapse-root-models"]
-    if aliases := client.model_aliases:
+    if aliases := manifest.model_aliases:
         extra += ["--aliases", json.dumps(aliases)]
-    model_document = prune_spec(schema, client) if input_type == "openapi" else schema
+    extra += ["--model-name-map", json.dumps(manifest.model_names)]
+    model_document = schema
+    if input_type == "openapi":
+        model_document = {
+            **schema,
+            "paths": {path: item for path, item in schema.get("paths", {}).items() if path in manifest.model_paths},
+        }
     with _temporary_sibling(working_directory / input_type, suffix=".json") as model_input:
         model_input.write_text(json.dumps(model_document, indent=2), encoding=encoding)
         with _temporary_sibling(package_root / "models" / "generated", suffix=".py") as output:
@@ -630,7 +602,7 @@ def generate_model_source(
             )
             source = normalize_model_header(output.read_text(encoding=encoding), input_type)
     destination = package_root / "models" / "_generated.py"
-    return format_python(source, str(destination), package=client.package)
+    return formatted_module(destination, source, package=package).source
 
 
 def _working_directory(config: Config) -> Path:

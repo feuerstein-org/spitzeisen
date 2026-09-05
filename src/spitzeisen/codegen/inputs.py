@@ -14,21 +14,19 @@ from ruamel.yaml.error import YAMLError
 from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.diagnostics import ModelImportWarning
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.java_frontend import compile_smithy_frontend
+from spitzeisen.codegen.java_frontend import FrontendResult, compile_smithy_frontend
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.service_plan import ServicePlan
 
 type ModelInputType = Literal["openapi", "jsonschema"]
 
 
 @dataclass(frozen=True, slots=True)
 class BuildInputs:
-    """Pydantic sidecar, assembled Smithy model, and the neutral service plan."""
+    """Pydantic model input and Java-emitted SDK artifacts."""
 
     model_schema: dict[str, Any]
     model_input_type: ModelInputType
-    smithy: dict[str, Any]
-    service_plan: ServicePlan
+    frontend: FrontendResult
     warnings: tuple[ModelImportWarning, ...]
 
 
@@ -84,13 +82,17 @@ def load_document(*, source: str | Path, timeout: int) -> dict[str, Any]:
 
 def load_compile_inputs(
     *,
+    package: str,
+    client_name: str,
+    vendor: str | None = None,
+    python_settings: dict[str, Any] | None = None,
     source: str | Path | None = None,
     smithy_sources: tuple[Path, ...] = (),
     overlays: tuple[Path, ...],
     service: str | None = None,
     timeout: int,
 ) -> BuildInputs:
-    """Load exactly one model source, assemble Smithy, and compile one service plan."""
+    """Load exactly one model source, assemble Smithy, and generate Python source."""
     if (source is None) == (not smithy_sources):
         raise CodegenError(detail="provide either an OpenAPI source or at least one native Smithy source")
     if source is not None:
@@ -106,14 +108,21 @@ def load_compile_inputs(
         model_input_type = "jsonschema"
         import_warnings = ()
     working_directory = smithy_sources[0].parent if smithy_sources else overlays[0].parent if overlays else None
-    frontend = compile_smithy_frontend(assembled, service=service, working_directory=working_directory)
+    frontend = compile_smithy_frontend(
+        assembled,
+        service=service,
+        package=package,
+        client_name=client_name,
+        vendor=vendor,
+        python_settings=python_settings,
+        working_directory=working_directory,
+    )
     if smithy_sources:
         model_schema = frontend.model_schema
     warnings = import_warnings
     return BuildInputs(
         model_schema=model_schema,
         model_input_type=model_input_type,
-        smithy=assembled,
-        service_plan=frontend.service_plan,
+        frontend=frontend,
         warnings=warnings,
     )

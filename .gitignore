@@ -10,6 +10,7 @@ examples/spec/generated/
 codegen/.gradle/
 codegen/build/
 codegen/**/build/
+codegen/**/bin/
 
 __pycache__/
 *.py[cod]

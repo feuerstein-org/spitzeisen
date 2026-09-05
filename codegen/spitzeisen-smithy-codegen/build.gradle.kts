@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.spotless)
 }
 
-description = "Smithy semantic frontend for Spitzeisen runtime-neutral service plans"
+description = "Smithy Python client generator for Spitzeisen"
 
 val spitzeisenJavaVersion = rootProject.extra["spitzeisenJavaVersion"] as String
 val spitzeisenSmithyVersion = rootProject.extra["spitzeisenSmithyVersion"] as String
@@ -62,7 +62,7 @@ tasks.withType<Test>().configureEach {
 }
 
 tasks.jar {
-    archiveFileName = "spitzeisen-service-plan.jar"
+    archiveFileName = "spitzeisen-python-codegen.jar"
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
     // The Smithy JAR plugin adds host- and time-specific values immediately before packaging.

@@ -41,7 +41,7 @@ run = "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:check :spitzeisen-s
 description = "Fail if the bundled Smithy plugin JAR is stale"
 run = [
     "mise run install-codegen-frontend",
-    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-service-plan.jar",
+    "git diff --exit-code -- src/spitzeisen/codegen/smithy/spitzeisen-python-codegen.jar",
 ]
 
 [tasks.demo-example]
@@ -49,14 +49,10 @@ description = "Run the generated weather SDK against an offline fake transport"
 depends = ["codegen"]
 run = "uv run python examples/demo.py"
 
-[tasks.smithy-java-spike]
-description = "Run the complete Java Smithy frontend verification suite"
-run = [
-    "codegen/gradlew -p codegen :spitzeisen-smithy-codegen:build :spitzeisen-smithy-codegen:installRuntimeJar :spitzeisen-smithy-codegen-test:smithyBuild",
-    "uv run --locked spitzeisen-gen import-openapi --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --output-path codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
-    "uv run --locked python codegen/run_smithy_build.py --plugin-jar codegen/spitzeisen-smithy-codegen/build/libs/spitzeisen-service-plan.jar --config codegen/spitzeisen-smithy-codegen-test/openapi-smithy-build.json --output codegen/spitzeisen-smithy-codegen-test/build/openapi-smithy codegen/spitzeisen-smithy-codegen-test/build/imported-weather.smithy.json",
-    "uv run --locked python codegen/verify_frontend.py",
-]
+[tasks.verify-codegen]
+description = "Verify the Java generator and execute real native-Smithy and OpenAPI SDKs"
+depends = ["install-codegen-frontend"]
+run = "uv run --locked pytest tests/test_codegen_sdk.py"
 
 [tasks.pre-commit]
 description = "Run pre-commit hooks on all files"

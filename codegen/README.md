@@ -1,89 +1,49 @@
-# Spitzeisen Smithy codegen
+# Smithy Python client generator
 
-This Gradle build contains Spitzeisen's production target-neutral Smithy frontend. Python remains
-the first target runtime and owns its generation context, symbol provider, protocol handlers,
-integrations, lowering, source renderer, and Pydantic backend.
+`spitzeisen-smithy-codegen` is a Java Smithy Build plugin named
+`spitzeisen-python-client-codegen`. It directly generates Python source using Smithy's Model,
+knowledge indexes, SymbolProvider, SymbolWriter, and FileManifest.
 
-`spitzeisen-smithy-codegen`
-: Provides the Java SPI class `SpitzeisenServicePlanPlugin`, registered with Smithy Build as
-  `spitzeisen-service-plan`. It accepts only an optional service ShapeId, prepares Smithy's semantic
-  `Model`, uses official knowledge indexes, and writes flat, unversioned `service-plan.json` plus
-  a temporary native-model `model-schema.json` sidecar through `FileManifest`.
+The Python CLI launches the packaged plugin and coordinates the existing Pydantic backend.
+There is no neutral service plan, Python lowering stage, or Jinja renderer.
+See [the architecture](../docs/codegen-architecture.md) for the supported profile, source
+ownership, model-name mapping, portable policies, and upstream reuse decisions.
 
-`spitzeisen-smithy-codegen-test`
-: A normal Smithy Build project that exercises plugin discovery, projections, preparation
-  transforms, bundled traits, native-weather generation, exact service semantics, and the custom
-  policy surface.
+## Build and verify
 
-The ServicePlan root contains `service`, ShapeId-keyed `operations`, ShapeId-keyed `shapes`, and
-`extensions`. It preserves exact Smithy types, relationships, defaults, constraints, protocols,
-auth, errors, event streams, pagination, and HTTP bindings. Portable `spitzeisen.api` traits are
-normalized as policies; raw `spitzeisen.python` traits are carried as extensions. Java performs no
-Python naming, type mapping, coercion rendering, Pydantic configuration, or Python capability
-checks.
+The checked-in Gradle wrapper and `mise.toml` select the toolchain.
 
-The bundled traits are split between:
-
-- `spitzeisen-api.smithy`: portable `result`, `notFound`, `rateLimitCost`,
-  `pageNumberPagination`, `sorting`, `queryEncoding`, `clientDefault`, `excludeOperation`,
-  `excludeParameter`, and `inputAdapter` policy;
-- `spitzeisen-python.smithy`: minimal Python `operation`, `parameter`, and `modelField` naming and
-  layout overrides; and
-- `spitzeisen-protocols.smithy`: the target-neutral `genericRestJson` protocol for ordinary HTTP
-  APIs with generic JSON document bodies.
-
-Standard Smithy traits remain authoritative for documentation, defaults, enums, ranges, HTTP,
-pagination, auth, errors, and event streams. Existing Python models and adapter implementations are
-selected through the CLI's strict `--python-settings` JSON document and decoded into
-`PythonSettings`, rather than encoded as target-specific Smithy type or function strings.
-
-The Python pipeline strictly loads ServicePlan, explicitly enables integrations, builds a
-`PythonGenerationContext`, resolves its `PythonSymbolProvider` and declared protocol handler,
-then calls `lower_service_plan` to produce a renderer-ready `PythonPlan`. Unsupported
-Python features fail in that lowerer, leaving the neutral Java artifact usable by another target.
-The built-in registry handles `spitzeisen.protocols#genericRestJson` and
-`aws.protocols#restJson1`.
-
-The Gradle wrapper pins the build tool. Shared Java and Smithy versions live in
-`src/spitzeisen/codegen/smithy/toolchain.properties`, which Gradle and the Python launcher both
-read. Lockfiles and SHA-256 verification metadata make the build dependency graph reproducible and
-verified.
-
-Run all Python and Java lint checks from the repository root:
-
-```console
-mise run lint
-```
-
-`mise run lint-fix` also applies the Java formatter. To format only the Java frontend:
-
-```console
-./codegen/gradlew -p codegen :spitzeisen-smithy-codegen:spotlessApply
-```
-
-Run the Java unit and Smithy integration tests:
-
-```console
-./codegen/gradlew -p codegen build
-```
-
-Build and copy the reproducible `spitzeisen-service-plan.jar` into the Python package:
-
-```console
+```bash
 mise run install-codegen-frontend
+mise run verify-codegen
+mise run codegen
+mise run check-codegen
 ```
 
-Run the complete frontend verification:
+The first task checks the Java generator and direct Smithy Build fixtures, then installs the thin,
+reproducible `spitzeisen-python-codegen.jar` into the Python package. `verify-codegen` also executes
+real generated native-Smithy and OpenAPI SDKs against an offline HTTP transport.
 
-```console
-mise run smithy-java-spike
+## Direct Smithy Build use
+
+```json
+{
+  "version": "1.0",
+  "plugins": {
+    "spitzeisen-python-client-codegen": {
+      "service": "native.weather#WeatherService",
+      "package": "weather_sdk",
+      "client_name": "WeatherClient",
+      "python": {}
+    }
+  }
+}
 ```
 
-That task compares direct Smithy Build output with the packaged launcher for native Smithy, the real
-weather OpenAPI fixture, and a policy-complete fixture. It verifies `service-plan.json`, the
-temporary model-schema sidecar, Python lowering, rendered Jinja/Pydantic modules, generated package
-imports, and the reproducible bundled artifact.
+The plugin emits raw Python files under `sdk/`, `manifest.json`, and `model-schema.json`.
+These are build intermediates: use `spitzeisen-gen generate` to finalize the complete SDK with
+Pydantic models, formatting, and preserved public extensions. Raw Smithy Build output alone is not
+a complete installable package.
 
-The ServicePlan and model schema are internal temporary artifacts, not user-maintained manifests.
-Smithy models and traits remain the source of truth; generated implementation modules are checked
-for drift, and create-once public extension modules remain untouched on regeneration.
+The Apache-licensed writer adaptation and external dependency notices are documented in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). No upstream generator or runtime tree is vendored.
