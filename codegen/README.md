@@ -2,12 +2,24 @@
 
 `spitzeisen-smithy-codegen` is a Java Smithy Build plugin named
 `spitzeisen-python-client-codegen`. It directly generates Python source using Smithy's Model,
-knowledge indexes, SymbolProvider, SymbolWriter, and FileManifest.
+knowledge indexes, `CodegenDirector` / `DirectedCodegen`, `SymbolProvider`, `SymbolWriter`, and
+`WriterDelegator`.
+
+The director owns model preparation, operation/service callbacks, and writer flushing. Target
+generators share a `GenerationContext`; operation resolution, parameter serialization, documentation,
+client rendering, and response-schema generation have separate responsibilities. The schema is
+emitted once for the Pydantic backend, which handles nested and recursive model classes.
 
 The Python CLI launches the packaged plugin and coordinates the existing Pydantic backend.
 There is no neutral service plan, Python lowering stage, or Jinja renderer.
 See [the architecture](../docs/codegen-architecture.md) for the supported profile, source
 ownership, model-name mapping, portable policies, and upstream reuse decisions.
+
+The JSON protocol is `alloy#simpleRestJson`. The generator depends on `alloy-core` 0.3.40 and
+tests depend on the matching `alloy-protocol-tests` artifact. The shared version pin lives in
+`src/spitzeisen/codegen/smithy/toolchain.properties`; Gradle locks and SHA-256 verification metadata
+record resolved build dependencies. Coursier resolves the same core version for CLI assembly and
+generation. See [the supported Alloy subset](../docs/alloy-client.md) before adding new traits.
 
 ## Build and verify
 

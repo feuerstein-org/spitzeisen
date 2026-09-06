@@ -176,10 +176,10 @@ async def test_public_weather_model_runs_its_custom_validator(
         await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
 
 
-async def test_weather_spec_constraints_reach_the_generated_model(
+async def test_weather_sdk_accepts_relaxed_response_constraints(
     weather_api: tuple[AsyncWeatherApi, FakeRouter],
 ) -> None:
-    """The transcribed specification's percentage semantics become generated validation."""
+    """The example opts into required input typing while keeping compatible response validation."""
     api, router = weather_api
     payload = weather_payload()
     measurements = payload["main"]
@@ -187,8 +187,9 @@ async def test_weather_spec_constraints_reach_the_generated_model(
     measurements["humidity"] = 101
     router.add("/data/2.5/weather", json=payload)
 
-    with pytest.raises(ValidationError, match="less than or equal to 100"):
-        await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
+    result = await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
+    assert result is not None
+    assert result.main.humidity == 101
 
 
 @pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=lambda p: str(p.name))

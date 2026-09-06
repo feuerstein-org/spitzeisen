@@ -1,0 +1,1127 @@
+diff --git a/modules/compiler-core/src/internals/IModelToSmithy.scala b/modules/compiler-core/src/internals/IModelToSmithy.scala
+index 7db8b06..92686b0 100644
+--- a/modules/compiler-core/src/internals/IModelToSmithy.scala
++++ b/modules/compiler-core/src/internals/IModelToSmithy.scala
+@@ -158,6 +158,7 @@ private[compiler] final class IModelToSmithy(useEnumTraitSyntax: Boolean)
+         case "Byte"       => ByteShape.builder()
+         case "Timestamp"  => TimestampShape.builder()
+         case "Document"   => DocumentShape.builder()
++        case "Blob"       => BlobShape.builder()
+         case "UUID" => StringShape.builder().addTrait(new UuidFormatTrait())
+         case "Null" =>
+           StructureShape.builder().addTrait(new NullFormatTrait())
+diff --git a/modules/docs/openapi.md b/modules/docs/openapi.md
+index c8b92c0..42bd229 100644
+--- a/modules/docs/openapi.md
++++ b/modules/docs/openapi.md
+@@ -41,7 +41,44 @@ encountered, the conversion still makes a best effort at converting everything e
+ This way, as much of the specification will be translated automatically and the user
+ can decide how to translate the rest.
+
+-OpenAPI 2.x and 3.x are supported as input formats to this converter.
++OpenAPI 2.x, 3.0.x, and a best-effort subset of 3.1.x are supported as input formats
++to this converter.
++
++#### OpenAPI 3.1
++
++OpenAPI 3.1 schemas use the same primitive, format, collection, object, string enum,
++reference, and composition mappings described below. Input documents are interpreted
++directly; they are not rewritten as OpenAPI 3.0. The same behavior is available for
++parsed models passed to `OpenApiCompiler`.
++
++A `type` containing one non-null type and `null`, such as `[string, "null"]`, maps
++to that type with `alloy#nullable`. This preserves the distinction between a nullable
++value and an optional member. An enum must also admit `null` for this trait to apply.
++Unconstrained schemas (`{}` or `true`) map to Smithy documents. Arrays with omitted
++or unconstrained `items` use document members. Schema `examples` are retained as
++`alloy#dataExamples`.
++
++The pinned Swagger parser accepts boolean schemas within properties and array items,
++but rejects boolean-valued entries directly under `components.schemas` before
++conversion. That parser limitation also applies here.
++
++Numeric `exclusiveMinimum` and `exclusiveMaximum` are combined with inclusive bounds.
++Integer bounds are rounded to the nearest permitted integer. Smithy cannot express
++exclusive bounds on decimal types exactly, so those conversions report a restriction,
++as they do for OpenAPI 3.0.
++
++This is not a complete JSON Schema 2020-12 implementation. Unsupported constraints
++produce conversion diagnostics instead of being hidden by a primitive type match.
++These include non-null type unions, non-string enums, `const`, `not`, `anyOf`,
++conditional schemas, tuple and containment constraints, dependent and unevaluated
++constraints, and validation siblings of `$ref`. Compositions with sibling constraints
++are also unsupported. `$id`, anchors, and custom vocabulary handling require further
++work. Existing best-effort limitations, including default-value conversion and webhook
++operations, also apply.
++
++Use `--validate-input --validate-output` to fail when parsing or conversion reports
++errors. Without output validation, unsupported schemas continue to produce diagnostic
++placeholder shapes as part of the converter's best-effort output.
+
+ Below are examples of how Smithy Translate converts various OpenAPI constructs into
+ Smithy.
+diff --git a/modules/openapi/src/internals/Extractors.scala b/modules/openapi/src/internals/Extractors.scala
+index 3183bfa..83b7455 100644
+--- a/modules/openapi/src/internals/Extractors.scala
++++ b/modules/openapi/src/internals/Extractors.scala
+@@ -23,10 +23,38 @@ import io.swagger.v3.oas.models.media._
+ import scala.jdk.CollectionConverters._
+ import Primitive._
+
++private[openapi] object SchemaType {
++  // OpenAPI 3.0 uses getType and specialized Schema subclasses; 3.1 uses
++  // getTypes on JsonSchema, including when the source type is a scalar string.
++  def types(sch: Schema[_]): Set[String] =
++    Option(sch.getTypes())
++      .map(_.asScala.toSet)
++      .getOrElse(Option(sch.getType()).toSet)
++
++  def unapply(sch: Schema[_]): Option[String] = {
++    val all = types(sch)
++    (all - "null").toList match {
++      case one :: Nil                => Some(one)
++      case Nil if all == Set("null") => Some("null")
++      case _                         => None
++    }
++  }
++
++  def nullable(sch: Schema[_]): Boolean = {
++    val all = types(sch)
++    all.contains("null") && all.size == 2 &&
++    Option(sch.getEnum()).forall(_.asScala.exists(_ == null))
++  }
++}
++
+ private[openapi] object CaseEnum {
+   def unapply(sch: Schema[_]): Option[Vector[String]] = sch match {
+-    case s: StringSchema if s.getEnum() != null && !s.getEnum().isEmpty =>
+-      Some(s.getEnum().asScala.toVector)
++    case SchemaType("string")
++        if sch.getEnum() != null && !sch.getEnum().isEmpty =>
++      val values = sch.getEnum().asScala.toVector
++      if (values.forall(v => v == null || v.isInstanceOf[String]))
++        Some(values.collect { case s: String => s })
++      else None
+     case _ => None
+   }
+ }
+@@ -34,9 +62,11 @@ private[openapi] object CaseEnum {
+ private[openapi] object CaseMap {
+   def unapply(sch: Schema[_]): Option[Schema[_]] = {
+     sch match {
+-      case m: MapSchema =>
+-        Option(m.getAdditionalProperties()).collect { case s: Schema[_] =>
+-          s
++      case SchemaType("object")
++          if Option(sch.getProperties()).forall(_.isEmpty) =>
++        Option(sch.getAdditionalProperties()).collect {
++          case s: Schema[_] if Option(s.getBooleanSchemaValue()).isEmpty =>
++            s
+         }
+       case _ => None
+     }
+@@ -45,12 +75,16 @@ private[openapi] object CaseMap {
+
+ private[openapi] object IsFreeForm {
+   def unapply(sch: Schema[_]): Boolean = {
+-    val isObjectSchema = sch.isInstanceOf[ObjectSchema]
++    val isObjectSchema = SchemaType.unapply(sch).contains("object")
+     val hasNoProperties = Option(sch.getProperties()).forall(_.isEmpty())
+-    (Option(sch.getAdditionalProperties())
++    sch.getAllOf == null && sch.getOneOf == null && hasNoProperties && (Option(
++      sch.getAdditionalProperties()
++    )
+       .map {
+         case b: java.lang.Boolean => b.booleanValue()
+-        case _                    => CaseMap.unapply(sch).isEmpty
++        case s: Schema[_] if s.getBooleanSchemaValue() != null =>
++          s.getBooleanSchemaValue().booleanValue()
++        case _ => CaseMap.unapply(sch).isEmpty
+       })
+       .getOrElse(isObjectSchema && hasNoProperties)
+   }
+@@ -62,8 +96,8 @@ private[openapi] object Format {
+
+ private[openapi] object XFormat {
+   def unapply(sch: Schema[_]): Option[String] =
+-    Option(sch.getExtensions().asScala)
+-      .flatMap(_.get("x-format"))
++    Option(sch.getExtensions())
++      .flatMap(m => Option(m.get("x-format")))
+       .map(_.toString())
+ }
+
+@@ -76,24 +110,19 @@ private[openapi] object & {
+ }
+
+ private[openapi] object CaseAllOf {
+-  def unapply(sch: Schema[_]): Option[Vector[Schema[_]]] = sch match {
+-    case composed: ComposedSchema =>
+-      Option(composed.getAllOf()).map(_.asScala.toVector)
+-    case _ => None
+-  }
++  def unapply(sch: Schema[_]): Option[Vector[Schema[_]]] =
++    Option(sch.getAllOf()).map(_.asScala.toVector)
+ }
+
+ private[openapi] object CaseOneOf {
+-  def unapply(sch: Schema[_]): Option[Vector[Schema[_]]] = sch match {
+-    case composed: ComposedSchema =>
+-      Option(composed.getOneOf()).map(_.asScala.toVector)
+-    case _ => None
+-  }
++  def unapply(sch: Schema[_]): Option[Vector[Schema[_]]] =
++    Option(sch.getOneOf()).map(_.asScala.toVector)
+ }
+
+ private[openapi] object CaseObject {
+   def unapply(sch: Schema[_]): Option[Schema[_]] = sch match {
+-    case o: ObjectSchema => Some(o)
++    case s if s.getAllOf != null || s.getOneOf != null => None
++    case SchemaType("object")                          => Some(sch)
+     case s: Schema[_] if Option(s.getProperties()).exists(_.asScala.nonEmpty) =>
+       Some(s)
+     case _ => None
+@@ -109,146 +138,147 @@ private[openapi] object NonEmptySegments {
+
+ private[openapi] object CasePrimitive {
+   def unapply(sch: Schema[_]): Option[Primitive] = sch match {
++    case s if s.getAllOf != null || s.getOneOf != null => None
+     // S:
+     //   type: string
+     //   format: timestamp
+-    case (_: StringSchema) & Format("timestamp") => Some(PTimestamp)
++    case SchemaType("string") & Format("timestamp") => Some(PTimestamp)
+
+     // S:
+     //   type: string
+     //   format: local-date
+-    case (_: StringSchema) & (Format("local-date") | XFormat("local-date")) =>
++    case SchemaType("string") & (Format("local-date") |
++        XFormat("local-date")) =>
+       Some(PLocalDate)
+
+     // S:
+     //   type: string
+     //   format: local-time
+-    case (_: StringSchema) & (Format("local-time") | XFormat("local-time")) =>
++    case SchemaType("string") & (Format("local-time") |
++        XFormat("local-time")) =>
+       Some(PLocalTime)
+
+     // S:
+     //   type: string
+     //   format: local-date-time
+-    case (_: StringSchema) & (Format("local-date-time") |
++    case SchemaType("string") & (Format("local-date-time") |
+         XFormat("local-date-time")) =>
+       Some(PLocalDateTime)
+
+     // S:
+     //   type: string
+     //   format: offset-date-time
+-    case (_: StringSchema) & (Format("offset-date-time") |
++    case SchemaType("string") & (Format("offset-date-time") |
+         XFormat("offset-date-time")) =>
+       Some(POffsetDateTime)
+
+     // S:
+     //   type: string
+     //   format: offset-time
+-    case (_: StringSchema) & (Format("offset-time") | XFormat("offset-time")) =>
++    case SchemaType("string") & (Format("offset-time") |
++        XFormat("offset-time")) =>
+       Some(POffsetTime)
+
+     // S:
+     //   type: string
+     //   format: zone-id
+-    case (_: StringSchema) & (Format("zone-id") | XFormat("zone-id")) =>
++    case SchemaType("string") & (Format("zone-id") | XFormat("zone-id")) =>
+       Some(PZoneId)
+
+     // S:
+     //   type: string
+     //   format: zone-offset
+-    case (_: StringSchema) & (Format("zone-offset") | XFormat("zone-offset")) =>
++    case SchemaType("string") & (Format("zone-offset") |
++        XFormat("zone-offset")) =>
+       Some(PZoneOffset)
+
+     // S:
+     //   type: string
+     //   format: zoned-date-time
+-    case (_: StringSchema) & (Format("zoned-date-time") |
++    case SchemaType("string") & (Format("zoned-date-time") |
+         XFormat("zoned-date-time")) =>
+       Some(PZonedDateTime)
+
+     // I:
+     //   type: integer
+     //   format: year
+-    case (_: IntegerSchema) & (Format("year") | XFormat("year")) => Some(PYear)
++    case SchemaType("integer") & (Format("year") | XFormat("year")) =>
++      Some(PYear)
+
+     // S:
+     //   type: string
+     //   format: year-month
+-    case (_: StringSchema) & (Format("year-month") | XFormat("year-month")) =>
++    case SchemaType("string") & (Format("year-month") |
++        XFormat("year-month")) =>
+       Some(PYearMonth)
+
+     // S:
+     //   type: string
+     //   format: month-day
+-    case (_: StringSchema) & (Format("month-day") | XFormat("month-day")) =>
++    case SchemaType("string") & (Format("month-day") | XFormat("month-day")) =>
+       Some(PMonthDay)
+
+-    // S:
+-    //   type: string
+-    //   format: password
+-    case (_: PasswordSchema) => Some(PString)
+-
+-    // S:
+-    //   type: string
+-    case _: StringSchema | _: EmailSchema => Some(PString)
+-
+     // S:
+     //   type: string
+     //   format: byte | format: binary
+-    case _: ByteArraySchema | _: BinarySchema => Some(PBytes)
++    case SchemaType("string") & (Format("byte") | Format("binary")) =>
++      Some(PBytes)
+
+     // S:
+     //   type: string
+     //   format: uuid
+-    case _: UUIDSchema => Some(PUUID)
++    case SchemaType("string") & Format("uuid") => Some(PUUID)
+
+     // S:
+     //   type: string
+     //   format: date
+-    case _: DateSchema => Some(PDate)
++    case SchemaType("string") & Format("date") => Some(PDate)
+
+     // S:
+     //   type: string
+     //   format: date-time
+-    case _: DateTimeSchema => Some(PDateTime)
++    case SchemaType("string") & Format("date-time") => Some(PDateTime)
++
++    case SchemaType("string") => Some(PString)
+
+     // N:
+     //  type: number
+     //  format: duration
+-    case (_: NumberSchema) & (Format("duration") | XFormat("duration")) =>
++    case SchemaType("number") & (Format("duration") | XFormat("duration")) =>
+       Some(PDuration)
+
+     // N:
+     //   type: number
+     //   format: float
+-    case (_: NumberSchema) & Format("float") => Some(PFloat)
++    case SchemaType("number") & Format("float") => Some(PFloat)
+
+     // N:
+     //   type: number
+     //   format: double
+-    case (_: NumberSchema) & Format("double") => Some(PDouble)
++    case SchemaType("number") & Format("double") => Some(PDouble)
+
+     // N:
+     //   type: number
+-    case (_: NumberSchema) & NoFormat() => Some(PDouble)
++    case SchemaType("number") & NoFormat() => Some(PDouble)
+
+     // I:
+     //   type: integer
+     //   format: int16 | noformat
+-    case (_: IntegerSchema) & (Format("int16")) => Some(PShort)
++    case SchemaType("integer") & Format("int16") => Some(PShort)
+
+     // I:
+     //   type: integer
+     //   format: int32 | noformat
+-    case (_: IntegerSchema) & (Format("int32") | NoFormat()) => Some(PInt)
++    case SchemaType("integer") & (Format("int32") | NoFormat()) => Some(PInt)
+
+     // I:
+     //   type: integer
+     //   format: int64
+-    case (_: IntegerSchema) & Format("int64") => Some(PLong)
++    case SchemaType("integer") & Format("int64") => Some(PLong)
+
+     // B:
+     //   type: boolean
+-    case _: BooleanSchema => Some(PBoolean)
++    case SchemaType("boolean") => Some(PBoolean)
+
+     case _ => None
+   }
+diff --git a/modules/openapi/src/internals/OpenApiToIModel.scala b/modules/openapi/src/internals/OpenApiToIModel.scala
+index a5fda60..76a9c7b 100644
+--- a/modules/openapi/src/internals/OpenApiToIModel.scala
++++ b/modules/openapi/src/internals/OpenApiToIModel.scala
+@@ -205,8 +205,12 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+       local: Local
+   ): OpenApiPattern[A] => OpenApiPattern[A] = {
+     val maybeHints = GetExtensions.from(HasExtensions.unsafeFrom(local.schema))
++    val nullable =
++      if (SchemaType.nullable(local.schema)) List(Hint.Nullable) else Nil
+     (pattern: OpenApiPattern[A]) =>
+-      pattern.mapContext(_.addHints(maybeHints, retainTopLevel = true))
++      pattern.mapContext(
++        _.addHints(maybeHints ++ nullable, retainTopLevel = true)
++      )
+   }
+
+   private def recordService(opDefIds: Vector[DefId]): F[Unit] = {
+@@ -386,47 +390,65 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+       local: Local,
+       prim: Primitive
+   ): (Option[Hint], Option[ToSmithyError]) = {
+-    val minR = Option(local.schema.getMinimum()).map(BigDecimal(_))
+-    val maxR = Option(local.schema.getMaximum()).map(BigDecimal(_))
++    val schema = local.schema
++    val min = Option(schema.getMinimum).map(BigDecimal(_))
++    val max = Option(schema.getMaximum).map(BigDecimal(_))
++    val exclusiveMin = Option(schema.getExclusiveMinimumValue)
++      .map(BigDecimal(_))
++      .orElse(
++        min.filter(_ =>
++          Option(schema.getExclusiveMinimum).exists(_.booleanValue())
++        )
++      )
++    val exclusiveMax = Option(schema.getExclusiveMaximumValue)
++      .map(BigDecimal(_))
++      .orElse(
++        max.filter(_ =>
++          Option(schema.getExclusiveMaximum).exists(_.booleanValue())
++        )
++      )
++    val integral = prim match {
++      case PByte | PShort | PInt | PLong | PYear => true
++      case _                                     => false
++    }
++    def lower(n: BigDecimal, exclusive: Boolean): BigDecimal =
++      if (!integral) n
++      else if (exclusive) n.setScale(0, BigDecimal.RoundingMode.FLOOR) + 1
++      else n.setScale(0, BigDecimal.RoundingMode.CEILING)
++    def upper(n: BigDecimal, exclusive: Boolean): BigDecimal =
++      if (!integral) n
++      else if (exclusive) n.setScale(0, BigDecimal.RoundingMode.CEILING) - 1
++      else n.setScale(0, BigDecimal.RoundingMode.FLOOR)
++
++    val minR =
++      (min.map(lower(_, false)).toList ++ exclusiveMin.map(lower(_, true)))
++        .reduceOption(_ max _)
++    val maxR =
++      (max.map(upper(_, false)).toList ++ exclusiveMax.map(upper(_, true)))
++        .reduceOption(_ min _)
+     val range =
+       if (minR.isDefined || maxR.isDefined) Some(Hint.Range(minR, maxR))
+       else None
+-
+-    val exclusiveMinModifier =
+-      Option(local.schema.getExclusiveMinimum())
+-        .map(m => if (m) 1L else 0L)
+-        .getOrElse(0L)
+-
+-    val exclusiveMaxModifier =
+-      Option(local.schema.getExclusiveMinimum())
+-        .map(m => if (m) -1L else 0L)
+-        .getOrElse(0L)
+-
+-    val (updatedRange, error) = range.map { r =>
+-      val isWholeNumberType = prim match {
+-        case PLong | PInt => true
+-        case _            => false
+-      }
+-      if (isWholeNumberType) {
+-        val newR = r.copy(
+-          min = r.min.map(_ + exclusiveMinModifier),
+-          max = r.max.map(_ + exclusiveMaxModifier)
+-        )
+-        (newR, None)
+-      } else {
++    val error =
++      if (!integral && (exclusiveMin.isDefined || exclusiveMax.isDefined)) {
+         val primType = prim.toString.drop("P".length())
+-        val errorMessage =
+-          s"Unable to automatically account for exclusiveMin/Max on decimal type $primType"
+-        (r, Some(ToSmithyError.Restriction(errorMessage)))
+-      }
+-    }.unzip
+-    (updatedRange, error.flatten)
++        Some(
++          ToSmithyError.Restriction(
++            s"Unable to automatically account for exclusiveMin/Max on decimal type $primType"
++          )
++        )
++      } else None
++    (range, error)
+   }
+
+   private def getExamplesHint(schema: Schema[_]): Option[Hint.Examples] =
+-    Option(schema.getExample())
+-      .map(GetExtensions.anyToNode)
+-      .map(n => Hint.Examples(List(n)))
++    Option(schema.getExamples())
++      .filterNot(_.isEmpty)
++      .map(_.asScala.toList.map(GetExtensions.anyToNode))
++      .orElse(
++        Option(schema.getExample()).map(e => List(GetExtensions.anyToNode(e)))
++      )
++      .map(Hint.Examples(_))
+
+   private def getExternalDocsHint(
+       schema: Schema[_]
+@@ -446,7 +468,26 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+    * not fit in our metamodel.
+    */
+   def unfold(local: Local): F[OpenApiPattern[Local]] = {
++    Schema31.restriction(local.schema) match {
++      case Some(message) =>
++        F.pure(OpenApiShortStop(local.context, Restriction(message)))
++      case None => unfoldSupported(local)
++    }
++  }
++
++  private def unfoldSupported(local: Local): F[OpenApiPattern[Local]] = {
+     local.schema match {
++      case SchemaType("null") => F.pure(OpenApiNull(local.context))
++
++      case s
++          if Option(s.getBooleanSchemaValue).exists(
++            _.booleanValue()
++          ) || Schema31.isUnconstrained(s) =>
++        F.pure(
++          OpenApiPrimitive(local.context, Primitive.PFreeForm).withDescription(
++            local
++          )
++        )
+       // S:
+       //   type: string
+       //   enum: [a, b ,c]
+@@ -500,14 +541,17 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+         idOrError match {
+           case Left(error) => F.pure(OpenApiShortStop(local.context, error))
+           case Right(parsedRef) =>
+-            F.pure(OpenApiRef(local.context, parsedRef.id))
++            F.pure(
++              OpenApiRef(local.context, parsedRef.id).withDescription(local)
++            )
+         }
+
+       // A:
+       //   type: set
+       //   items:
+       //     <item type>
+-      case s: ArraySchema if s.getUniqueItems =>
++      case s @ SchemaType("array")
++          if Option(s.getUniqueItems).exists(_.booleanValue()) =>
+         val lengthConstraint = getCollectionLengthConstraint(local.schema)
+         val hints = getExternalDocsHint(s).toList ++
+           getExamplesHint(s).toList ++ lengthConstraint
+@@ -516,7 +560,7 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+             local.context.addHints(hints),
+             Local(
+               local.context.append(Segment.Arbitrary(ci"Item")),
+-              s.getItems()
++              Option(s.getItems()).getOrElse(new ObjectSchema())
+             )
+           ).withDescription(local)
+         )
+@@ -525,7 +569,7 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+       //   type: array
+       //   items:
+       //     <item type>
+-      case s: ArraySchema =>
++      case s @ SchemaType("array") =>
+         val lengthConstraint = getCollectionLengthConstraint(local.schema)
+         val hints = getExternalDocsHint(s).toList ++
+           getExamplesHint(s).toList ++ lengthConstraint
+@@ -534,7 +578,7 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+             local.context.addHints(hints),
+             Local(
+               local.context.append(Segment.Arbitrary(ci"Item")),
+-              s.getItems()
++              Option(s.getItems()).getOrElse(new ObjectSchema())
+             )
+           ).withDescription(local)
+         )
+@@ -631,7 +675,7 @@ private[openapi] class OpenApiToIModel[F[_]: Parallel: TellShape: TellError](
+
+       // O:
+       //   anyOf:
+-      case s: ComposedSchema if Option(s.getAnyOf).isDefined =>
++      case s if Option(s.getAnyOf).isDefined =>
+         val error = Restriction("anyOf is not allowed")
+         F.pure(OpenApiShortStop(local.context, error))
+
+diff --git a/modules/openapi/src/internals/Schema31.scala b/modules/openapi/src/internals/Schema31.scala
+new file mode 100644
+index 0000000..b6fcea9
+--- /dev/null
++++ b/modules/openapi/src/internals/Schema31.scala
+@@ -0,0 +1,128 @@
++/* Copyright 2022 Disney Streaming
++ *
++ * Licensed under the Tomorrow Open Source Technology License, Version 1.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *    https://disneystreaming.github.io/TOST-1.0.txt
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package smithytranslate.compiler.internals.openapi
++
++import io.swagger.v3.oas.models.SpecVersion
++import io.swagger.v3.oas.models.media.Schema
++import scala.jdk.CollectionConverters._
++
++private[openapi] object Schema31 {
++  private def validations(schema: Schema[_]): List[String] = List(
++    "type" -> SchemaType.types(schema).nonEmpty,
++    "enum" -> (schema.getEnum != null),
++    "properties" -> (schema.getProperties != null),
++    "required" -> (schema.getRequired != null),
++    "items" -> (schema.getItems != null),
++    "additionalProperties" -> (schema.getAdditionalProperties != null),
++    "allOf" -> (schema.getAllOf != null),
++    "oneOf" -> (schema.getOneOf != null),
++    "minimum" -> (schema.getMinimum != null),
++    "maximum" -> (schema.getMaximum != null),
++    "exclusiveMinimum" -> (schema.getExclusiveMinimumValue != null),
++    "exclusiveMaximum" -> (schema.getExclusiveMaximumValue != null),
++    "minLength" -> (schema.getMinLength != null),
++    "maxLength" -> (schema.getMaxLength != null),
++    "pattern" -> (schema.getPattern != null),
++    "minItems" -> (schema.getMinItems != null),
++    "maxItems" -> (schema.getMaxItems != null),
++    "uniqueItems" -> (schema.getUniqueItems != null)
++  ).collect { case (key, true) => key }
++
++  // Called only after restriction has checked unsupported keywords.
++  def isUnconstrained(schema: Schema[_]): Boolean =
++    schema.getSpecVersion == SpecVersion.V31 &&
++      schema.get$ref == null && validations(schema).isEmpty
++
++  def restriction(schema: Schema[_]): Option[String] = {
++    if (schema.getSpecVersion != SpecVersion.V31) None
++    else {
++      // Inspect Schema objects, never property names, examples, or extension data.
++      // A type match must not hide a JSON Schema constraint we cannot represent.
++      val unsupported = List(
++        "const" -> schema.getConst,
++        "not" -> schema.getNot,
++        "anyOf" -> schema.getAnyOf,
++        "if" -> schema.getIf,
++        "then" -> schema.getThen,
++        "else" -> schema.getElse,
++        "prefixItems" -> schema.getPrefixItems,
++        "contains" -> schema.getContains,
++        "minContains" -> schema.getMinContains,
++        "maxContains" -> schema.getMaxContains,
++        "unevaluatedItems" -> schema.getUnevaluatedItems,
++        "unevaluatedProperties" -> schema.getUnevaluatedProperties,
++        "additionalItems" -> schema.getAdditionalItems,
++        "dependentSchemas" -> schema.getDependentSchemas,
++        "dependentRequired" -> schema.getDependentRequired,
++        "patternProperties" -> schema.getPatternProperties,
++        "propertyNames" -> schema.getPropertyNames,
++        "multipleOf" -> schema.getMultipleOf,
++        "minProperties" -> schema.getMinProperties,
++        "maxProperties" -> schema.getMaxProperties,
++        "contentEncoding" -> schema.getContentEncoding,
++        "contentMediaType" -> schema.getContentMediaType,
++        "contentSchema" -> schema.getContentSchema,
++        "$id" -> schema.get$id,
++        "$anchor" -> schema.get$anchor,
++        "$dynamicAnchor" -> schema.get$dynamicAnchor,
++        "$vocabulary" -> schema.get$vocabulary
++      ).collect { case (key, value) if value != null => key }
++      val unknown = Option(schema.getExtensions).toList.flatMap(
++        _.keySet.asScala.filterNot(_.startsWith("x-"))
++      )
++      val types = SchemaType.types(schema)
++      val constraints = validations(schema)
++      val stringEnum = SchemaType.unapply(schema).contains("string") &&
++        Option(schema.getEnum).exists(values =>
++          values.asScala.exists(_.isInstanceOf[String]) &&
++            values.asScala.forall(v => v == null || v.isInstanceOf[String])
++        )
++
++      if (unsupported.nonEmpty || unknown.nonEmpty)
++        Some(
++          s"OpenAPI 3.1 schema keywords not supported: ${(unsupported ++ unknown).sorted.mkString(", ")}"
++        )
++      else if ((types - "null").size > 1)
++        Some(
++          s"OpenAPI 3.1 type unions other than a nullable type are not supported: ${types.toList.sorted.mkString(", ")}"
++        )
++      else if (schema.get$ref != null && constraints.nonEmpty)
++        Some(
++          s"OpenAPI 3.1 validation siblings of $$ref are not supported: ${constraints.mkString(", ")}"
++        )
++      else if (schema.getEnum != null && !stringEnum)
++        Some("OpenAPI 3.1 enum requires a string type and string values")
++      else if (
++        Option(schema.getBooleanSchemaValue).exists(b => !b.booleanValue())
++      )
++        Some("OpenAPI 3.1 false schemas cannot be represented in Smithy")
++      else if (schema.getAllOf != null || schema.getOneOf != null) {
++        val siblings = constraints.filterNot(k =>
++          k == "allOf" || k == "oneOf" || (k == "type" && types == Set(
++            "object"
++          ))
++        )
++        if (
++          siblings.nonEmpty || (schema.getAllOf != null && schema.getOneOf != null)
++        )
++          Some(
++            "OpenAPI 3.1 composition with sibling constraints is not supported"
++          )
++        else None
++      } else None
++    }
++  }
++}
+diff --git a/modules/openapi/test/src/OpenApi31Spec.scala b/modules/openapi/test/src/OpenApi31Spec.scala
+new file mode 100644
+index 0000000..6fb7de0
+--- /dev/null
++++ b/modules/openapi/test/src/OpenApi31Spec.scala
+@@ -0,0 +1,421 @@
++/* Copyright 2022 Disney Streaming
++ *
++ * Licensed under the Tomorrow Open Source Technology License, Version 1.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *    https://disneystreaming.github.io/TOST-1.0.txt
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package smithytranslate.compiler.openapi
++
++import cats.data.NonEmptyList
++import io.swagger.parser.OpenAPIParser
++import smithytranslate.compiler._
++import software.amazon.smithy.model.Model
++import software.amazon.smithy.model.shapes.ShapeId
++import software.amazon.smithy.model.traits.RangeTrait
++import scala.jdk.CollectionConverters._
++
++final class OpenApi31Spec extends munit.FunSuite {
++  private val options = ToSmithyCompilerOptions(
++    useVerboseNames = false,
++    validateInput = true,
++    validateOutput = true,
++    transformers = Nil,
++    useEnumTraitSyntax = false,
++    debug = false
++  )
++
++  private def input(spec: String): OpenApiCompilerInput =
++    OpenApiCompilerInput.UnparsedSpecs(
++      List(FileContents(NonEmptyList.one("foo.yaml"), spec))
++    )
++
++  private def compile(spec: String): Model =
++    OpenApiCompiler.compile(options, input(spec)) match {
++      case ToSmithyResult.Success(errors, model) =>
++        assertEquals(errors, Nil)
++        model
++      case ToSmithyResult.Failure(error, errors) =>
++        fail((error :: errors).mkString("\n"))
++    }
++
++  private def document(schemas: String, version: String = "3.1.0"): String =
++    s"""openapi: '$version'
++       |info:
++       |  title: Test
++       |  version: '1.0'
++       |paths: {}
++       |components:
++       |  schemas:
++       |${schemas.linesIterator.map("    " + _).mkString("\n")}
++       |""".stripMargin
++
++  private val primitives = List(
++    ("string", "", "string"),
++    ("string", "email", "string"),
++    ("string", "password", "string"),
++    ("string", "uuid", "string"),
++    ("string", "byte", "blob"),
++    ("string", "binary", "blob"),
++    ("string", "date", "string"),
++    ("string", "date-time", "timestamp"),
++    ("string", "timestamp", "timestamp"),
++    ("string", "local-date", "string"),
++    ("string", "local-time", "string"),
++    ("string", "local-date-time", "string"),
++    ("string", "offset-date-time", "timestamp"),
++    ("string", "offset-time", "string"),
++    ("string", "zone-id", "string"),
++    ("string", "zone-offset", "string"),
++    ("string", "zoned-date-time", "string"),
++    ("string", "year-month", "string"),
++    ("string", "month-day", "string"),
++    ("number", "", "double"),
++    ("number", "float", "float"),
++    ("number", "double", "double"),
++    ("number", "duration", "bigDecimal"),
++    ("integer", "", "integer"),
++    ("integer", "int16", "short"),
++    ("integer", "int32", "integer"),
++    ("integer", "int64", "long"),
++    ("integer", "year", "integer"),
++    ("boolean", "", "boolean")
++  )
++
++  primitives.foreach { case (tpe, format, expected) =>
++    test(s"3.1 maps $tpe/$format like 3.0") {
++      val schema = s"Value:\n  type: $tpe\n" +
++        (if (format.isEmpty) "" else s"  format: $format\n")
++      val model31 = compile(document(schema))
++      val model30 = compile(document(schema, "3.0.3"))
++      val value = model31.expectShape(ShapeId.from("foo#Value"))
++      assertEquals(value.getType.toString, expected)
++      assertEquals(ModelWrapper(model31), ModelWrapper(model30))
++    }
++  }
++
++  test(
++    "3.1 preserves collections, enums, references, composition, and data keys"
++  ) {
++    val schemas = """Name:
++                    |  type: string
++                    |  minLength: 1
++                    |  pattern: '^[a-z]+$'
++                    |Item:
++                    |  type: object
++                    |  required: [name]
++                    |  properties:
++                    |    name: {$ref: '#/components/schemas/Name'}
++                    |    const: {type: string}
++                    |    if: {type: boolean}
++                    |  example: {const: one, if: true}
++                    |Names:
++                    |  type: array
++                    |  items: {$ref: '#/components/schemas/Name'}
++                    |  minItems: 1
++                    |UniqueNames:
++                    |  type: array
++                    |  uniqueItems: true
++                    |  items: {type: string}
++                    |Items:
++                    |  type: object
++                    |  additionalProperties: {$ref: '#/components/schemas/Item'}
++                    |Color:
++                    |  type: string
++                    |  enum: [red, blue]
++                    |Free: {type: object}
++                    |Extended:
++                    |  type: object
++                    |  allOf:
++                    |    - {$ref: '#/components/schemas/Item'}
++                    |    - type: object
++                    |      properties:
++                    |        count: {type: integer}
++                    |Choice:
++                    |  oneOf:
++                    |    - {$ref: '#/components/schemas/Item'}
++                    |    - {$ref: '#/components/schemas/Name'}
++                    |""".stripMargin
++    assertEquals(
++      ModelWrapper(compile(document(schemas))),
++      ModelWrapper(compile(document(schemas, "3.0.3")))
++    )
++  }
++
++  test("3.1 HTTP query and response scalars produce a valid model") {
++    val spec = """openapi: '3.1.0'
++                 |info: {title: Test, version: '1.0'}
++                 |paths:
++                 |  /items:
++                 |    get:
++                 |      operationId: getItem
++                 |      parameters:
++                 |        - name: id
++                 |          in: query
++                 |          required: true
++                 |          schema: {type: string}
++                 |      responses:
++                 |        '200':
++                 |          description: OK
++                 |          content:
++                 |            application/json:
++                 |              schema:
++                 |                type: object
++                 |                properties:
++                 |                  name: {type: string}
++                 |                  count: {type: integer}
++                 |                  active: {type: boolean}
++                 |""".stripMargin
++    val model = compile(spec)
++    assertEquals(
++      model
++        .expectShape(ShapeId.from("foo#GetItemInput$id"))
++        .asMemberShape
++        .get
++        .getTarget,
++      ShapeId.from("smithy.api#String")
++    )
++    assertEquals(
++      ModelWrapper(model),
++      ModelWrapper(compile(spec.replace("3.1.0", "3.0.3")))
++    )
++    val parsed = new OpenAPIParser().readContents(spec, null, null).getOpenAPI
++    OpenApiCompiler.compile(
++      options,
++      OpenApiCompilerInput.ParsedSpec(NonEmptyList.one("foo.yaml"), parsed)
++    ) match {
++      case ToSmithyResult.Success(errors, result) =>
++        assertEquals(errors, Nil)
++        assertEquals(ModelWrapper(result), ModelWrapper(model))
++      case other => fail(other.toString)
++    }
++    assertEquals(parsed.getOpenapi, "3.1.0")
++    assertEquals(
++      parsed.getPaths
++        .get("/items")
++        .getGet
++        .getParameters
++        .get(0)
++        .getSchema
++        .getTypes
++        .asScala
++        .toSet,
++      Set("string")
++    )
++  }
++
++  List("[string, 'null']", "['null', string]").foreach { types =>
++    test(s"3.1 nullable $types preserves its scalar and nullable trait") {
++      val model = compile(
++        document(
++          s"Maybe:\n  type: $types\n  minLength: 1\n" +
++            "Holder:\n  type: object\n  required: [value]\n  properties:\n    value: {$ref: '#/components/schemas/Maybe'}"
++        )
++      )
++      val shape = model.expectShape(ShapeId.from("foo#Maybe"))
++      assert(shape.isStringShape)
++      assert(shape.hasTrait("alloy#nullable"))
++      assert(shape.hasTrait("smithy.api#length"))
++      assert(
++        model
++          .expectShape(ShapeId.from("foo#Holder$value"))
++          .hasTrait("smithy.api#required")
++      )
++    }
++  }
++
++  List(true, false).foreach { includesNull =>
++    test(s"3.1 enum nullable trait follows its values: $includesNull") {
++      val values = if (includesNull) "[red, null]" else "[red]"
++      val model =
++        compile(document(s"Color:\n  type: [string, 'null']\n  enum: $values"))
++      val shape = model.expectShape(ShapeId.from("foo#Color"))
++      assert(shape.isEnumShape)
++      assertEquals(shape.hasTrait("alloy#nullable"), includesNull)
++    }
++  }
++
++  test(
++    "3.1 unconstrained and boolean schemas, array items, and nullable collections"
++  ) {
++    val model =
++      compile(document("""Anything: {}
++                         |Holder:
++                         |  type: object
++                         |  properties:
++                         |    always: true
++                         |Values: {type: array}
++                         |ExplicitValues: {type: array, items: {}}
++                         |Object: {type: object, additionalProperties: true}
++                         |DocumentMap: {type: object, additionalProperties: {}}
++                         |Closed:
++                         |  type: object
++                         |  additionalProperties: false
++                         |  properties:
++                         |    name: {type: string}
++                         |MaybeValues:
++                         |  type: [array, 'null']
++                         |  items: {type: integer}
++                         |""".stripMargin))
++    List("Anything", "Object").foreach { name =>
++      assert(model.expectShape(ShapeId.from(s"foo#$name")).isDocumentShape)
++    }
++    List("Values", "ExplicitValues").foreach { name =>
++      val shape = model.expectShape(ShapeId.from(s"foo#$name")).asListShape.get
++      assertEquals(
++        shape.getMember.getTarget,
++        ShapeId.from("smithy.api#Document")
++      )
++    }
++    assert(model.expectShape(ShapeId.from("foo#Closed")).isStructureShape)
++    assert(model.expectShape(ShapeId.from("foo#DocumentMap")).isMapShape)
++    assertEquals(
++      model
++        .expectShape(ShapeId.from("foo#Holder$always"))
++        .asMemberShape
++        .get
++        .getTarget,
++      ShapeId.from("smithy.api#Document")
++    )
++    assert(
++      model
++        .expectShape(ShapeId.from("foo#MaybeValues"))
++        .hasTrait("alloy#nullable")
++    )
++  }
++
++  test("3.1 examples use alloy dataExamples") {
++    val model =
++      compile(document("Name:\n  type: string\n  examples: [first, second]"))
++    val examples = model
++      .expectShape(ShapeId.from("foo#Name"))
++      .findTrait("alloy#dataExamples")
++      .get
++      .toNode
++      .expectArrayNode
++    assertEquals(examples.getElements.size, 2)
++  }
++
++  test("3.1 numeric exclusive bounds combine with inclusive bounds") {
++    val model = compile(document("""Count:
++                                   |  type: integer
++                                   |  minimum: 5
++                                   |  exclusiveMinimum: 3.5
++                                   |  maximum: 20
++                                   |  exclusiveMaximum: 10.5
++                                   |""".stripMargin))
++    val range = model
++      .expectShape(ShapeId.from("foo#Count"))
++      .expectTrait(classOf[RangeTrait])
++    assertEquals(range.getMin.get, new java.math.BigDecimal("5"))
++    assertEquals(range.getMax.get, new java.math.BigDecimal("10"))
++  }
++
++  List(
++    ("exclusiveMinimum: 3\nmaximum: 20", "4", "20"),
++    ("minimum: -5\nexclusiveMaximum: -1.5", "-5", "-2"),
++    ("minimum: 1.5\nmaximum: 4.5", "2", "4"),
++    ("exclusiveMinimum: 3\nexclusiveMaximum: 20", "4", "19")
++  ).foreach { case (bounds, min, max) =>
++    test(s"3.1 integer bounds $bounds") {
++      val model = compile(
++        document(
++          "Count:\n  type: integer\n" + bounds.linesIterator
++            .map("  " + _)
++            .mkString("\n")
++        )
++      )
++      val range = model
++        .expectShape(ShapeId.from("foo#Count"))
++        .expectTrait(classOf[RangeTrait])
++      assertEquals(range.getMin.get, new java.math.BigDecimal(min))
++      assertEquals(range.getMax.get, new java.math.BigDecimal(max))
++    }
++  }
++
++  test("3.0 exclusive maximum is independent of exclusive minimum") {
++    val model = compile(
++      document(
++        "Count:\n  type: integer\n  minimum: 3\n  maximum: 20\n  exclusiveMaximum: true",
++        "3.0.3"
++      )
++    )
++    val range = model
++      .expectShape(ShapeId.from("foo#Count"))
++      .expectTrait(classOf[RangeTrait])
++    assertEquals(range.getMin.get, new java.math.BigDecimal("3"))
++    assertEquals(range.getMax.get, new java.math.BigDecimal("19"))
++  }
++
++  private val unsupported = List(
++    "type: [string, integer]" -> "type",
++    "type: array\nprefixItems: [{type: string}]" -> "prefixItems",
++    "type: object\nunevaluatedProperties: false" -> "unevaluatedProperties",
++    "type: object\nif: {required: [name]}\nthen: {required: [value]}" -> "if",
++    "type: string\nconst: fixed" -> "const",
++    "type: string\nnot: {pattern: '^x'}" -> "not",
++    "type: string\nanyOf: [{minLength: 1}, {maxLength: 5}]" -> "anyOf",
++    "type: integer\nconst: 0" -> "const",
++    "type: string\nconst: null" -> "const",
++    "type: string\nenum: [1, 2]" -> "enum",
++    "type: string\n$ref: '#/components/schemas/Other'" -> "$ref",
++    "type: number\nexclusiveMinimum: 1.5" -> "exclusiveMin/Max",
++    "type: object\n$defs: {Name: {type: string}}" -> "$defs",
++    "type: object\nallOf: [{type: object}]\nrequired: [name]" -> "composition"
++  )
++
++  unsupported.foreach { case (schema, keyword) =>
++    test(s"3.1 reports unsupported $keyword instead of dropping it") {
++      val spec = document(
++        "Other: {type: string}\nValue:\n" + schema.linesIterator
++          .map("  " + _)
++          .mkString("\n")
++      )
++      OpenApiCompiler.compile(options, input(spec)) match {
++        case ToSmithyResult.Failure(error, errors) =>
++          assert(
++            (error :: errors).exists(_.toString.contains(keyword)),
++            (error :: errors).mkString("\n")
++          )
++        case other => fail(s"Expected an explicit restriction, got $other")
++      }
++    }
++  }
++
++  test("3.1 false schemas report a restriction") {
++    OpenApiCompiler.compile(
++      options,
++      input(
++        document("Holder:\n  type: object\n  properties:\n    never: false")
++      )
++    ) match {
++      case ToSmithyResult.Failure(error, errors) =>
++        assert((error :: errors).exists(_.toString.contains("false schemas")))
++      case other => fail(other.toString)
++    }
++  }
++
++  test("3.1 restrictions also remain visible in best-effort output") {
++    OpenApiCompiler.compile(
++      options.copy(validateOutput = false),
++      input(document("Value:\n  type: string\n  const: fixed"))
++    ) match {
++      case ToSmithyResult.Success(errors, model) =>
++        assert(errors.exists(_.toString.contains("const")))
++        assert(
++          model
++            .expectShape(ShapeId.from("error#Value"))
++            .hasTrait("smithytranslate#errorMessage")
++        )
++      case other => fail(other.toString)
++    }
++  }
++}

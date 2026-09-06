@@ -30,13 +30,13 @@ from spitzeisen.codegen.generate import (
 )
 from spitzeisen.codegen.inputs import load_compile_inputs, load_document
 from spitzeisen.codegen.java_frontend import PLUGIN_JAR
+from spitzeisen.codegen.model_validation import runtime_response_constraints
 from spitzeisen.codegen.openapi import import_openapi
-from spitzeisen.codegen.toolchain import JAVA_VERSION, SMITHY_VERSION
+from spitzeisen.codegen.toolchain import ALLOY_VERSION, JAVA_VERSION, SMITHY_VERSION
 
 if TYPE_CHECKING:
     from spitzeisen.codegen.artifacts import ArtifactManifest
     from spitzeisen.codegen.diagnostics import ModelImportWarning
-    from spitzeisen.codegen.inputs import ModelInputType
 
 DEFAULT_MODEL_BASE_CLASS = "spitzeisen.SpitzeisenModel"
 DEFAULT_HTTP_TIMEOUT = 5
@@ -61,6 +61,7 @@ class Config:
     file_encoding: str
     base_class: str
     http_timeout: int
+    require_api_required_arguments: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +134,6 @@ def _doctor_checks() -> tuple[DoctorCheck, ...]:
             required_entries = {
                 "META-INF/services/software.amazon.smithy.build.SmithyBuildPlugin",
                 "META-INF/smithy/spitzeisen-api.smithy",
-                "META-INF/smithy/spitzeisen-protocols.smithy",
                 "META-INF/smithy/spitzeisen-python.smithy",
             }
             has_traits = required_entries.issubset(bundle.namelist())
@@ -148,7 +148,7 @@ def _doctor_checks() -> tuple[DoctorCheck, ...]:
     smithy_check = DoctorCheck(
         "Smithy",
         True,
-        f"pinned CLI and JSON Schema frontend {SMITHY_VERSION}",
+        f"pinned CLI and JSON Schema frontend {SMITHY_VERSION}; Alloy {ALLOY_VERSION}",
     )
     return java_check, coursier_check, bundle_check, smithy_check
 
@@ -213,6 +213,7 @@ def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
     file_encoding: str,
     base_class: str,
     http_timeout: int,
+    require_api_required_arguments: bool | None = None,
 ) -> Config:
     """Validate command options and resolve the selected document source."""
     source, smithy_sources = _select_generation_source(url, path, smithy)
@@ -234,6 +235,7 @@ def _process_config(  # noqa: PLR0913 - mirrors the public Typer options
         file_encoding=file_encoding,
         base_class=base_class,
         http_timeout=http_timeout,
+        require_api_required_arguments=require_api_required_arguments,
     )
 
 
@@ -251,10 +253,10 @@ def _print_import_warning(err: ModelImportWarning) -> None:
 
 
 def handle_warnings(warnings: Sequence[ModelImportWarning], fail_on_warning: bool = False) -> None:
-    """Render recoverable model-import warnings and optionally fail the command."""
+    """Render import and compatibility diagnostics and optionally fail the command."""
     if not warnings:
         return
-    message = "Warning(s) encountered while generating. Client was generated, but some pieces may be missing"
+    message = "Generation warnings: review the import or compatibility diagnostics below."
     typer.secho(message, underline=True, bold=True, fg=typer.colors.BRIGHT_YELLOW, err=True)
     typer.echo(err=True)
     for warning in warnings:
@@ -328,13 +330,18 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
     python_settings: Path | None = typer.Option(
         None,
         "--python-settings",
-        help="JSON file containing Python-only external models, adapters, and protocol preferences",
+        help="JSON file containing Python generation policies, external models, adapters, and protocol preferences",
     ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used when writing generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
     http_timeout: int = typer.Option(DEFAULT_HTTP_TIMEOUT, min=1, help="OpenAPI URL timeout in seconds"),
     fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when model-import warnings occur"),
+    require_api_required_arguments: bool | None = typer.Option(
+        None,
+        "--require-api-required-arguments/--no-require-api-required-arguments",
+        help="Expose API-required inputs in signatures; overrides Python settings (default: disabled)",
+    ),
 ) -> None:
     """Generate models and the async/sync SDK surfaces in one pass."""
     config = _process_config(
@@ -351,6 +358,7 @@ def generate(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a par
         file_encoding=file_encoding,
         base_class=base_class,
         http_timeout=http_timeout,
+        require_api_required_arguments=require_api_required_arguments,
     )
     with _handle_codegen_errors():
         result = _render(config)
@@ -380,13 +388,18 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
     python_settings: Path | None = typer.Option(
         None,
         "--python-settings",
-        help="JSON file containing Python-only external models, adapters, and protocol preferences",
+        help="JSON file containing Python generation policies, external models, adapters, and protocol preferences",
     ),
     output_path: Path = typer.Option(..., help="The client package directory"),
     file_encoding: str = typer.Option("utf-8", help="Encoding used by generated files"),
     base_class: str = typer.Option(DEFAULT_MODEL_BASE_CLASS, help="Base class for generated Pydantic models"),
     http_timeout: int = typer.Option(DEFAULT_HTTP_TIMEOUT, min=1, help="OpenAPI URL timeout in seconds"),
     fail_on_warning: bool = typer.Option(False, help="Return a non-zero status when model-import warnings occur"),
+    require_api_required_arguments: bool | None = typer.Option(
+        None,
+        "--require-api-required-arguments/--no-require-api-required-arguments",
+        help="Expose API-required inputs in signatures; overrides Python settings (default: disabled)",
+    ),
 ) -> None:
     """Fail when committed generated output differs from clean generation."""
     config = _process_config(
@@ -403,6 +416,7 @@ def check(  # noqa: PLR0913, PLR0917 - Typer exposes each CLI option as a parame
         file_encoding=file_encoding,
         base_class=base_class,
         http_timeout=http_timeout,
+        require_api_required_arguments=require_api_required_arguments,
     )
     with _handle_codegen_errors():
         result = _render(config)
@@ -449,12 +463,12 @@ def is_current(module: GeneratedModule, *, encoding: str = "utf-8") -> bool:
     return module.create_once or module.path.read_text(encoding=encoding) == module.source
 
 
-def normalize_model_header(source: str, input_type: ModelInputType = "openapi") -> str:
+def normalize_model_header(source: str) -> str:
     """Replace datamodel-code-generator's temporary filename with stable provenance."""
     match = MODEL_HEADER.match(source)
     if match is None:
         return source
-    provenance = "selected OpenAPI operations" if input_type == "openapi" else "the assembled Smithy model"
+    provenance = "the assembled Smithy model"
     return f"# Generated by datamodel-code-generator from {provenance}.\n{source[match.end() :]}"
 
 
@@ -488,7 +502,6 @@ def _render(config: Config) -> RenderResult:
         if generated:
             model_source = generate_model_source(
                 schema=inputs.model_schema,
-                input_type=inputs.model_input_type,
                 working_directory=_working_directory(config),
                 manifest=manifest,
                 package=config.package,
@@ -527,21 +540,23 @@ def _validate_handwritten_models(manifest: ArtifactManifest, package: str, packa
 
 def _load_python_settings(config: Config) -> dict[str, Any]:
     """Load target options; Java validates their contents once against the assembled model."""
-    if config.python_settings_path is None:
-        return {}
-    try:
-        document: object = json.loads(config.python_settings_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as err:
-        raise CodegenError(header="Invalid Python target settings", detail=str(err)) from err
-    if not isinstance(document, dict):
-        raise CodegenError(header="Invalid Python target settings", detail="expected a JSON object")
-    return cast("dict[str, Any]", document)
+    settings: dict[str, Any] = {}
+    if config.python_settings_path is not None:
+        try:
+            document: object = json.loads(config.python_settings_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as err:
+            raise CodegenError(header="Invalid Python target settings", detail=str(err)) from err
+        if not isinstance(document, dict):
+            raise CodegenError(header="Invalid Python target settings", detail="expected a JSON object")
+        settings = cast("dict[str, Any]", document)
+    if config.require_api_required_arguments is not None:
+        settings["require_api_required_arguments"] = config.require_api_required_arguments
+    return settings
 
 
 def generate_model_source(
     *,
     schema: dict[str, Any],
-    input_type: ModelInputType,
     working_directory: Path,
     manifest: ArtifactManifest,
     package: str,
@@ -550,22 +565,12 @@ def generate_model_source(
     encoding: str,
 ) -> str:
     """Run the replaceable Pydantic model backend and return reproducible source."""
-    extra: list[str] = []
-    if input_type == "openapi":
-        extra += ["--openapi-scopes", "paths"]
-    else:
-        extra += ["--skip-root-model", "--collapse-root-models"]
+    extra = ["--skip-root-model", "--collapse-root-models"]
     if aliases := manifest.model_aliases:
         extra += ["--aliases", json.dumps(aliases)]
     extra += ["--model-name-map", json.dumps(manifest.model_names)]
-    model_document = schema
-    if input_type == "openapi":
-        model_document = {
-            **schema,
-            "paths": {path: item for path, item in schema.get("paths", {}).items() if path in manifest.model_paths},
-        }
-    with _temporary_sibling(working_directory / input_type, suffix=".json") as model_input:
-        model_input.write_text(json.dumps(model_document, indent=2), encoding=encoding)
+    with _temporary_sibling(working_directory / "jsonschema", suffix=".json") as model_input:
+        model_input.write_text(json.dumps(schema, indent=2), encoding=encoding)
         with _temporary_sibling(package_root / "models" / "generated", suffix=".py") as output:
             subprocess.run(  # noqa: S603
                 [
@@ -573,7 +578,7 @@ def generate_model_source(
                     "--input",
                     str(model_input),
                     "--input-file-type",
-                    input_type,
+                    "jsonschema",
                     "--output",
                     str(output),
                     "--output-model-type",
@@ -600,7 +605,7 @@ def generate_model_source(
                 capture_output=True,
                 text=True,
             )
-            source = normalize_model_header(output.read_text(encoding=encoding), input_type)
+            source = runtime_response_constraints(normalize_model_header(output.read_text(encoding=encoding)))
     destination = package_root / "models" / "_generated.py"
     return formatted_module(destination, source, package=package).source
 

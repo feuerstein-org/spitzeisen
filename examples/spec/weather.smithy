@@ -7,11 +7,11 @@ use openapi#GetCurrentWeatherInput
 use openapi#OpenapiService
 use spitzeisen.api#excludeParameter
 use spitzeisen.api#notFound
-use spitzeisen.protocols#genericRestJson
+use alloy#simpleRestJson
 use spitzeisen.python#operation
 use spitzeisen.python#parameter
 
-apply OpenapiService @genericRestJson
+apply OpenapiService @simpleRestJson
 
 apply GetCurrentWeather @operation(module: "current_weather")
 apply GetCurrentWeather @notFound(behavior: "absent")

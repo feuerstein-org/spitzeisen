@@ -1,6 +1,5 @@
 package org.feuerstein.spitzeisen.codegen;
 
-import static org.feuerstein.spitzeisen.codegen.PythonWriter.literal;
 import static org.feuerstein.spitzeisen.codegen.PythonWriter.quote;
 
 import java.util.ArrayList;
@@ -8,13 +7,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
+import org.feuerstein.spitzeisen.codegen.PythonParameters.Parameter;
 import software.amazon.smithy.codegen.core.Symbol;
+import software.amazon.smithy.codegen.core.SymbolProvider;
 import software.amazon.smithy.model.Model;
 import software.amazon.smithy.model.knowledge.EventStreamIndex;
 import software.amazon.smithy.model.knowledge.HttpBinding;
 import software.amazon.smithy.model.knowledge.HttpBindingIndex;
-import software.amazon.smithy.model.knowledge.NullableIndex;
 import software.amazon.smithy.model.knowledge.OperationIndex;
 import software.amazon.smithy.model.knowledge.PaginatedIndex;
 import software.amazon.smithy.model.node.Node;
@@ -25,16 +24,11 @@ import software.amazon.smithy.model.shapes.ServiceShape;
 import software.amazon.smithy.model.shapes.Shape;
 import software.amazon.smithy.model.shapes.ShapeType;
 import software.amazon.smithy.model.shapes.StructureShape;
-import software.amazon.smithy.model.traits.DefaultTrait;
-import software.amazon.smithy.model.traits.DocumentationTrait;
-import software.amazon.smithy.model.traits.ExternalDocumentationTrait;
 import software.amazon.smithy.model.traits.HttpTrait;
 import software.amazon.smithy.model.traits.JsonNameTrait;
 import software.amazon.smithy.model.traits.RangeTrait;
-import software.amazon.smithy.model.traits.RequiredTrait;
-import software.amazon.smithy.model.traits.TimestampFormatTrait;
 
-/** Resolves and emits a Python operation directly from Smithy shapes and indexes. */
+/** Resolves one operation against Smithy indexes and the supported target policies. */
 final class PythonOperation {
   private static final Set<HttpBinding.Location> REQUEST_LOCATIONS =
       Set.of(
@@ -42,7 +36,7 @@ final class PythonOperation {
           HttpBinding.Location.QUERY,
           HttpBinding.Location.QUERY_PARAMS,
           HttpBinding.Location.HEADER);
-  private static final Set<String> LOCAL_NAMES =
+  static final Set<String> LOCAL_NAMES =
       Set.of(
           "self",
           "params",
@@ -66,19 +60,17 @@ final class PythonOperation {
   final boolean generatedModel;
   private final Model model;
   private final PythonSettings settings;
-  private final PythonSymbols symbols;
-  private final HttpBindingIndex bindings;
-  private final HttpTrait http;
-  private final boolean collection;
-  private final boolean absent;
-  private final String resultsKey;
-  private final List<Parameter> parameters = new ArrayList<>();
-  private final List<Parameter> sorting = new ArrayList<>();
-  private final ObjectNode pagination;
-  private final String pageName;
-  private final String pageSizeName;
-  private final int pageSizeMax;
-  private final String sortSeparator;
+  final HttpTrait http;
+  final boolean collection;
+  final boolean absent;
+  final String resultsKey;
+  final List<Parameter> parameters = new ArrayList<>();
+  final List<Parameter> sorting = new ArrayList<>();
+  final ObjectNode pagination;
+  final String pageName;
+  final String pageSizeName;
+  final int pageSizeMax;
+  final String sortSeparator;
 
   /**
    * Resolves the target's supported surface without creating an intermediate wire model.
@@ -86,18 +78,30 @@ final class PythonOperation {
    * @param model assembled semantic model
    * @param settings validated Python target settings
    * @param symbols selected symbols
+   * @param names deterministic Python naming scopes
    * @param shape modeled shape
    */
   PythonOperation(
-      Model model, PythonSettings settings, PythonSymbols symbols, OperationShape shape) {
+      Model model,
+      PythonSettings settings,
+      SymbolProvider symbols,
+      PythonNames names,
+      OperationShape shape) {
     this.model = model;
     this.settings = settings;
-    this.symbols = symbols;
     this.shape = shape;
-    bindings = HttpBindingIndex.of(model);
+    AlloyProtocol.validate(model, shape);
+    var bindings = HttpBindingIndex.of(model);
     http = shape.getTrait(HttpTrait.class).orElseThrow(() -> unsupported("HTTP binding required"));
     if (!"GET".equals(http.getMethod())) {
-      throw unsupported("Python runtime supports GET only");
+      throw unsupported("generated Alloy operations support GET only");
+    }
+    if (http.getCode() == 204 || http.getCode() == 205) {
+      throw unsupported("empty response bodies are not supported by generated JSON methods");
+    }
+    if (!http.getUri().getQueryLiterals().isEmpty()) {
+      throw unsupported(
+          "URI query literals are not supported; use a query member with a client default");
     }
     if (EventStreamIndex.of(model).getInputInfo(shape).isPresent()
         || EventStreamIndex.of(model).getOutputInfo(shape).isPresent()) {
@@ -110,19 +114,19 @@ final class PythonOperation {
     String contextualName =
         shape.getId().getName(model.expectShape(settings.service(), ServiceShape.class));
     key =
-        symbols.allocate(
+        names.allocate(
             "modules",
             shape.getId().toString(),
             PythonSymbols.snake(python.getStringMemberOrDefault("module", contextualName)));
     method =
-        symbols.allocate(
+        names.allocate(
             "methods",
             shape.getId().toString(),
             PythonSymbols.snake(python.getStringMemberOrDefault("method", contextualName)));
     className =
-        symbols.allocate("classes", shape.getId().toString(), PythonSymbols.pascal(key + "_api"));
+        names.allocate("classes", shape.getId().toString(), PythonSymbols.pascal(key + "_api"));
     accessor =
-        symbols.allocate(
+        names.allocate(
             "accessors",
             shape.getId().toString(),
             PythonSymbols.snake(python.getStringMemberOrDefault("accessor", key + "_api")));
@@ -144,6 +148,9 @@ final class PythonOperation {
             ? model.expectShape(result.value().members().iterator().next().getTarget())
             : result.value();
     generatedModel = !settings.externalModels().containsKey(response.getId().toString());
+    if (!response.isStructureShape() && !response.isDocumentShape()) {
+      throw unsupported("response records must be JSON objects modeled as structures or Documents");
+    }
     if (generatedModel && !response.isStructureShape()) {
       throw unsupported(
           "response must be a structure or have a configured external model: " + response.getId());
@@ -157,6 +164,11 @@ final class PythonOperation {
     for (var binding : request.values()) {
       if (!REQUEST_LOCATIONS.contains(binding.getLocation())) {
         throw unsupported("unsupported request binding " + binding.getLocation());
+      }
+      if (binding.getLocation() == HttpBinding.Location.HEADER
+          && model.expectShape(binding.getMember().getTarget()).isListShape()) {
+        throw unsupported(
+            "header collections are not supported by the Alloy client subset; use a String and adapter");
       }
     }
     for (var binding : bindings.getResponseBindings(shape).values()) {
@@ -175,7 +187,7 @@ final class PythonOperation {
       sort.getStringMember(field).ifPresent(value -> structural.add(value.getValue()));
     }
     String scope = "parameters:" + shape.getId();
-    symbols.reserve(scope, LOCAL_NAMES);
+    names.reserve(scope, LOCAL_NAMES);
     for (MemberShape member : input.members()) {
       if (structural.contains(member.getMemberName())) {
         continue;
@@ -186,8 +198,7 @@ final class PythonOperation {
       }
       if (member.hasTrait("spitzeisen.api#excludeParameter")) {
         if (binding.getLocation() == HttpBinding.Location.LABEL
-            || member.hasTrait(RequiredTrait.class)
-            || !NullableIndex.of(model).isMemberNullable(member)) {
+            || !MemberPresence.inputNullable(model, member, settings)) {
           throw unsupported("cannot exclude a required input: " + member.getId());
         }
         continue;
@@ -197,7 +208,7 @@ final class PythonOperation {
               .getStringMemberOrDefault("name", member.getMemberName());
       parameters.add(
           new Parameter(
-              symbols.allocate(scope, member.getId().toString(), PythonSymbols.snake(preferred)),
+              names.allocate(scope, member.getId().toString(), PythonSymbols.snake(preferred)),
               member,
               binding,
               defaultValue(member),
@@ -283,444 +294,8 @@ final class PythonOperation {
     }
   }
 
-  /**
-   * Renders a native asynchronous or blocking operation implementation.
-   *
-   * @return resolved Python source or identifier
-   * @param async selected async
-   */
-  String render(boolean async) {
-    String prefix = async ? "Async" : "Sync";
-    String aw = async ? "await " : "";
-    var names = new HashSet<>(LOCAL_NAMES);
-    names.addAll(PythonSymbols.BUILTINS);
-    names.add(prefix + className + "Base");
-    parameters.forEach(parameter -> names.add(parameter.name()));
-    var writer = new PythonWriter(names);
-    String modelName = writer.reference(responseSymbol);
-    String base = writer.reference("spitzeisen", prefix + "SpitzeisenApi");
-    var arguments = new ArrayList<Argument>();
-    parameters.forEach(parameter -> arguments.add(argument(parameter, writer)));
-    sorting.forEach(parameter -> arguments.add(argument(parameter, writer)));
-    String cost =
-        SdkPolicy.of(shape, "rateLimitCost").getNumberMemberOrDefault("units", 1).toString();
-    String paginationType =
-        writer.reference("spitzeisen", pageName == null ? "NoPagination" : "PageNumber");
-    String pageArgs =
-        pageName == null
-            ? ""
-            : "page_param="
-                + quote(pageName)
-                + ", start="
-                + pagination.getNumberMemberOrDefault("start", 1)
-                + ", step="
-                + pagination.getNumberMemberOrDefault("step", 1)
-                + ", ";
-    String uri = http.getUri().toString().replace("+}", "}");
-    writer.write(
-        "_OPERATION = $T(path=$L, cost=$L, pagination=$L($Lresults_key=$L))\n",
-        PythonSymbols.symbol("spitzeisen", "SpitzeisenOperationSpec"),
-        quote(uri),
-        cost,
-        paginationType,
-        pageArgs,
-        resultsKey);
-    writer.write("class $L($L):", prefix + className + "Base", base).indent();
-    writer.docs(
-        "Generated request layer. Customize the public " + prefix + className + " subclass.");
-    String rawType =
-        (collection ? "list[dict[str, " : "dict[str, ")
-            + writer.reference("typing", "Any")
-            + (collection ? "]]" : "]")
-            + (absent ? " | None" : "");
-    signature(writer, arguments, async, true, rawType);
-    writer.docs(
-        "Fetch raw JSON without model validation. See " + method + " for parameter documentation.");
-    for (Argument argument : arguments) {
-      Node defaultValue = argument.parameter().defaultValue();
-      if (defaultValue != null && (defaultValue.isArrayNode() || defaultValue.isObjectNode())) {
-        writer.write(
-            "$L = $T($L)",
-            argument.parameter().name(),
-            PythonSymbols.symbol("copy", "deepcopy"),
-            argument.parameter().name());
-      }
-      writer.write(
-          "$L = self._validate_input($L, $L)",
-          argument.parameter().name(),
-          argument.parameter().name(),
-          argument.type());
-    }
-    if (collection) {
-      writer.write("max_results = self._validate_input(max_results, int | None)");
-    }
-    writer
-        .write(
-            "params: $T = [",
-            PythonSymbols.symbol("spitzeisen.params", "QueryParams").toBuilder()
-                .putProperty("runtimeAnnotation", true)
-                .build())
-        .indent();
-    for (Argument argument : arguments) {
-      if (!sorting.contains(argument.parameter()) && isQuery(argument.parameter().binding())) {
-        queryValue(writer, argument, argument.coercion());
-      }
-    }
-    if (sortSeparator != null) {
-      var field = arguments.get(arguments.size() - 2);
-      var order = arguments.get(arguments.size() - 1);
-      queryValue(
-          writer,
-          field,
-          writer.reference("spitzeisen", "coerce_choice")
-              + "("
-              + writer.reference("spitzeisen", "coerce_sort")
-              + "("
-              + field.coercion()
-              + ", "
-              + order.coercion()
-              + ", separator="
-              + quote(sortSeparator)
-              + "), "
-              + symbols.type(model.expectShape(field.parameter().member().getTarget()), writer)
-              + ", \"sort\")");
-    } else {
-      for (Argument argument : arguments) {
-        if (sorting.contains(argument.parameter())) {
-          queryValue(writer, argument, argument.coercion());
-        }
-      }
-    }
-    if (pageSizeName != null) {
-      writer.write(
-          "*$L(min(max_results, $L) if max_results is not None else $L, name=$L),",
-          writer.reference("spitzeisen", "serialize_query_param"),
-          pageSizeMax,
-          pageSizeMax,
-          quote(pageSizeName));
-    }
-    writer.dedent().write("]");
-    writer.write("headers = $L({", writer.reference("spitzeisen", "build_header_params")).indent();
-    for (Argument argument : arguments) {
-      if (argument.parameter().binding().getLocation() == HttpBinding.Location.HEADER) {
-        writer.write(
-            "$L: $L,",
-            quote(argument.parameter().binding().getLocationName()),
-            required(argument, writer));
-      }
-    }
-    writer.dedent().write("})");
-    writer
-        .write(
-            "$L$Lself.$L$L(_OPERATION, params=params, headers=headers,",
-            collection ? "return " : "data = ",
-            aw,
-            collection ? "_get_all_pages" : "_request",
-            absent ? "_optional" : "")
-        .indent();
-    if (collection) {
-      writer.write("max_results=max_results,");
-    }
-    for (Argument argument : arguments) {
-      var binding = argument.parameter().binding();
-      if (binding.getLocation() == HttpBinding.Location.LABEL) {
-        String label = binding.getLocationName();
-        if (Set.of("params", "headers", "max_results", "spec", "self").contains(label)) {
-          throw unsupported("path label conflicts with a runtime request argument: " + label);
-        }
-        boolean greedy = http.getUri().getLabel(label).orElseThrow().isGreedyLabel();
-        String expression =
-            writer.reference("spitzeisen", "serialize_path_param")
-                + "("
-                + required(argument, writer)
-                + ", greedy="
-                + (greedy ? "True" : "False")
-                + ")";
-        writer.write(
-            "$L",
-            PythonSymbols.RESERVED.contains(label)
-                ? "**{" + quote(label) + ": " + expression + "},"
-                : label + "=" + expression + ",");
-      }
-    }
-    writer.dedent().write(")");
-    if (!collection) {
-      if (absent) {
-        writer.write("if data is None:").indent().write("return None").dedent();
-      }
-      writer.write("if not isinstance(data, dict):").indent();
-      writer.write("message = $L", quote("expected a response object"));
-      writer.write("raise $T(message)", PythonSymbols.symbol("spitzeisen", "ResponseShapeError"));
-      writer.dedent();
-      if (!"None".equals(resultsKey)) {
-        writer.write("result = data.get($L)", resultsKey);
-        writer
-            .write("if result is None:")
-            .indent()
-            .write("return $L", absent ? "None" : "{}")
-            .dedent();
-        writer.write("if not isinstance(result, dict):").indent();
-        writer.write("message = $L", quote("expected a response result object"));
-        writer.write("raise $T(message)", PythonSymbols.symbol("spitzeisen", "ResponseShapeError"));
-        writer.dedent().write("return result");
-      } else {
-        writer.write("return data");
-      }
-    }
-    writer.dedent().write("");
-    signature(
-        writer,
-        arguments,
-        async,
-        false,
-        (collection ? "list[" + modelName + "]" : modelName) + (absent ? " | None" : ""));
-    writer.docs(documentation(arguments, async));
-    writer.write("raw = $Lself.$L_raw(", aw, method).indent();
-    for (Argument argument : arguments) {
-      writer.write("$L=$L,", argument.parameter().name(), argument.parameter().name());
-    }
-    if (collection) {
-      writer.write("max_results=max_results,");
-    }
-    writer.dedent().write(")");
-    if (absent) {
-      writer.write("if raw is None:").indent().write("return None").dedent();
-    }
-    writer.write(
-        collection
-            ? "return self._validate_records(raw, $L, self._resolve_validation_mode(on_validation_error))"
-            : "return $L.model_validate(raw)",
-        modelName);
-    writer.dedent().dedent();
-    return writer.toString();
-  }
-
-  private Argument argument(Parameter parameter, PythonWriter writer) {
-    var member = parameter.member();
-    var target = model.expectShape(member.getTarget());
-    var adapterPolicy = SdkPolicy.of(member, "inputAdapter");
-    String type;
-    String coercion = parameter.name();
-    if (!adapterPolicy.isEmpty() && parameter.literals() == null) {
-      String id = adapterPolicy.expectStringMember("id").getValue();
-      var adapterNode = settings.inputAdapters().get(id);
-      if (adapterNode == null) {
-        throw unsupported("input adapter is not registered: " + id);
-      }
-      var adapter = adapterNode.expectObjectNode();
-      type = PythonSymbols.configuredType(adapter.expectObjectMember("public_type"), writer);
-      var function = adapter.expectObjectMember("function");
-      coercion =
-          writer.reference(
-                  PythonSymbols.symbol(
-                          function.expectStringMember("module").getValue(),
-                          function.expectStringMember("name").getValue())
-                      .toBuilder()
-                      .putProperty(
-                          "alias",
-                          function.getStringMemberOrDefault(
-                              "alias", function.expectStringMember("name").getValue()))
-                      .build())
-              + "("
-              + parameter.name()
-              + ", param_name="
-              + quote(parameter.name())
-              + ")";
-    } else {
-      type =
-          parameter.literals() == null
-              ? symbols.type(target, writer)
-              : PythonSymbols.literals(parameter.literals(), writer);
-      Shape value = target;
-      MemberShape subject = member;
-      boolean multiple = target.isListShape() || target.getType() == ShapeType.SET;
-      if (multiple) {
-        subject = target.members().iterator().next();
-        value = model.expectShape(subject.getTarget());
-      }
-      if (parameter.literals() != null || value.isEnumShape() || value.isIntEnumShape()) {
-        String enumType = multiple ? symbols.type(value, writer) : type;
-        coercion =
-            writer.reference("spitzeisen", multiple ? "coerce_choices" : "coerce_choice")
-                + "("
-                + parameter.name()
-                + ", "
-                + enumType
-                + ", "
-                + quote(parameter.name())
-                + ")";
-      } else if (value.isTimestampShape()) {
-        var defaultFormat =
-            parameter.binding().getLocation() == HttpBinding.Location.HEADER
-                ? TimestampFormatTrait.Format.HTTP_DATE
-                : TimestampFormatTrait.Format.DATE_TIME;
-        String format =
-            bindings
-                .determineTimestampFormat(subject, parameter.binding().getLocation(), defaultFormat)
-                .toString();
-        coercion =
-            writer.reference("spitzeisen", multiple ? "coerce_timestamps" : "coerce_timestamp")
-                + "("
-                + parameter.name()
-                + ", "
-                + quote(format)
-                + ", "
-                + quote(parameter.name())
-                + ")";
-      }
-    }
-    if (parameter.defaultValue() != null && parameter.defaultValue().isNullNode()) {
-      type += " | None";
-    }
-    var encoding = SdkPolicy.of(member, "queryEncoding");
-    if (!encoding.isEmpty() && !isQuery(parameter.binding())) {
-      throw unsupported("query encoding requires a query binding: " + member.getId());
-    }
-    if ("deepObject".equals(encoding.getStringMemberOrDefault("style", "form"))
-        || encoding.getBooleanMemberOrDefault("allowReserved", false)) {
-      throw unsupported("deepObject and allowReserved query encoding are not supported");
-    }
-    return new Argument(parameter, type, coercion, encoding);
-  }
-
-  private void signature(
-      PythonWriter writer, List<Argument> arguments, boolean async, boolean raw, String returns) {
-    writer.write("$Ldef $L$L(self,", async ? "async " : "", method, raw ? "_raw" : "").indent();
-    if (collection || !arguments.isEmpty()) {
-      writer.write("*,");
-    }
-    for (Argument argument : arguments) {
-      Node value = argument.parameter().defaultValue();
-      String defaultSource = value == null ? "" : literal(value);
-      if (value != null
-          && value.isNumberNode()
-          && model.expectShape(argument.parameter().member().getTarget()).isBigDecimalShape()) {
-        defaultSource = writer.reference("decimal", "Decimal") + "(" + quote(defaultSource) + ")";
-      }
-      writer.write(
-          "$L: $L$L,",
-          argument.parameter().name(),
-          argument.type(),
-          value == null ? "" : " = " + defaultSource);
-    }
-    if (collection) {
-      writer.write("max_results: int | None = None,");
-      if (!raw) {
-        writer.write(
-            "on_validation_error: $T | None = None,",
-            PythonSymbols.symbol("spitzeisen", "ValidationMode"));
-      }
-    }
-    writer.dedent().write(") -> $L:", returns).indent();
-  }
-
-  private void queryValue(PythonWriter writer, Argument argument, String value) {
-    writer.write(
-        "*$L($L, name=$L, style=$L, explode=$L, required=$L, param_name=$L),",
-        writer.reference("spitzeisen", "serialize_query_param"),
-        value,
-        quote(argument.parameter().binding().getLocationName()),
-        quote(argument.encoding().getStringMemberOrDefault("style", "form")),
-        argument.encoding().getBooleanMemberOrDefault("explode", true) ? "True" : "False",
-        argument.parameter().defaultValue() == null
-                || argument.parameter().member().hasTrait(RequiredTrait.class)
-            ? "True"
-            : "False",
-        quote(argument.parameter().name()));
-  }
-
-  private String required(Argument argument, PythonWriter writer) {
-    return argument.parameter().defaultValue() != null
-            && !argument.parameter().member().hasTrait(RequiredTrait.class)
-            && argument.parameter().binding().getLocation() != HttpBinding.Location.LABEL
-        ? argument.coercion()
-        : writer.reference("spitzeisen", "require_value")
-            + "("
-            + argument.coercion()
-            + ", "
-            + quote(argument.parameter().name())
-            + ")";
-  }
-
-  private String documentation(List<Argument> arguments, boolean async) {
-    String docs =
-        shape
-            .getTrait(DocumentationTrait.class)
-            .map(DocumentationTrait::getValue)
-            .orElse("Call " + method + ".");
-    String url =
-        shape
-            .getTrait(ExternalDocumentationTrait.class)
-            .map(value -> value.getUrls().values().stream().sorted().findFirst().orElse(""))
-            .orElse("");
-    String example =
-        arguments.stream()
-            .filter(argument -> argument.parameter().defaultValue() == null)
-            .map(argument -> argument.parameter().name() + "=...")
-            .collect(Collectors.joining(", "));
-    var text = new StringBuilder(docs).append("\n\n");
-    text.append(
-        collection
-            ? "Fetch every page and validate the returned records."
-            : "Fetch and validate the response.");
-    if (!url.isEmpty()) {
-      text.append("\n\nDocs: ").append(url);
-    }
-    text.append("\n\nExample::\n\n    ")
-        .append(async ? "async with Async" : "with Sync")
-        .append(settings.clientName())
-        .append("(config) as api:\n        result = ")
-        .append(async ? "await " : "")
-        .append("api.")
-        .append(accessor)
-        .append('.')
-        .append(method)
-        .append('(')
-        .append(example)
-        .append(")\n");
-    if (!arguments.isEmpty() || collection) {
-      text.append("\nArgs:\n");
-      for (Argument argument : arguments) {
-        text.append("    ")
-            .append(argument.parameter().name())
-            .append(": ")
-            .append(
-                argument
-                    .parameter()
-                    .member()
-                    .getTrait(DocumentationTrait.class)
-                    .map(DocumentationTrait::getValue)
-                    .orElse("Value for " + argument.parameter().binding().getLocationName() + "."))
-            .append('\n');
-      }
-      if (collection) {
-        text.append("    max_results: Maximum total records (None means no cap).\n")
-            .append(
-                "    on_validation_error: Override the configured raise/skip validation policy.\n");
-      }
-    }
-    text.append("\nReturns:\n    Validated ")
-        .append(collection ? "records" : "response")
-        .append(absent ? ", or None for HTTP 404." : ".");
-    return text.append(
-            "\n\nRaises:\n    pydantic.ValidationError: Invalid response data.\n    ValueError: Invalid input.\n")
-        .toString();
-  }
-
   private Node defaultValue(MemberShape member) {
-    var configured = SdkPolicy.of(member, "clientDefault");
-    if (!configured.isEmpty()) {
-      return configured.expectMember("value");
-    }
-    return member
-        .getMemberTrait(model, DefaultTrait.class)
-        .map(DefaultTrait::toNode)
-        .orElseGet(
-            () ->
-                !member.hasTrait(RequiredTrait.class)
-                        && NullableIndex.of(model).isMemberNullable(member)
-                    ? Node.nullNode()
-                    : null);
+    return MemberPresence.inputDefault(model, member, settings);
   }
 
   private HttpBinding query(StructureShape input, Map<String, HttpBinding> request, String name) {
@@ -748,11 +323,6 @@ final class PythonOperation {
     return new IllegalArgumentException(message + " on " + shape.getId());
   }
 
-  private static boolean isQuery(HttpBinding binding) {
-    return binding.getLocation() == HttpBinding.Location.QUERY
-        || binding.getLocation() == HttpBinding.Location.QUERY_PARAMS;
-  }
-
   /**
    * Returns the JSON property name selected by the protocol's jsonName trait.
    *
@@ -765,13 +335,4 @@ final class PythonOperation {
         .map(JsonNameTrait::getValue)
         .orElse(member.getMemberName());
   }
-
-  private record Parameter(
-      String name,
-      MemberShape member,
-      HttpBinding binding,
-      Node defaultValue,
-      List<? extends Node> literals) {}
-
-  private record Argument(Parameter parameter, String type, String coercion, ObjectNode encoding) {}
 }

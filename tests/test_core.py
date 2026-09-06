@@ -8,6 +8,8 @@ mis-transform fails a test rather than shipping.
 
 from __future__ import annotations
 
+import csv
+import io
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, cast
 
@@ -125,6 +127,118 @@ async def test_request_returns_decoded_body(surface: str) -> None:
     assert body == {"results": [{"id": "a", "size": 1}]}
 
 
+async def test_handwritten_csv_decoder_shares_auth_retries_and_cost(surface: str) -> None:
+    """A non-JSON endpoint uses the same transport policy and decodes only its final response."""
+    driver = Driver(surface)
+    driver.config.auth = QueryParamAuth("token", "test-token")
+    costs: list[float] = []
+
+    class Limiter:
+        def __call__(self, cost: float) -> Limiter:
+            costs.append(cost)
+            return self
+
+        def __enter__(self) -> None:
+            pass
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        async def __aenter__(self) -> None:
+            pass
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+    driver.config.limiter = Limiter()
+    driver.router.add("/quotes/AAPL", status=429).add(
+        "/quotes/AAPL",
+        content="id,size\na,2\n",
+        headers={"Content-Type": "text/csv", "X-Source": "vendor"},
+    )
+    decoded: list[int] = []
+
+    def decode(response: httpx2.Response) -> list[Thing]:
+        decoded.append(response.status_code)
+        assert response.headers["x-source"] == "vendor"
+        return [Thing.model_validate(row) for row in csv.DictReader(io.StringIO(response.text))]
+
+    result = await driver.call(
+        "request",
+        SpitzeisenOperationSpec(path="/quotes/{ticker}", cost=2.5),
+        decoder=decode,
+        path_params={"ticker": "AAPL"},
+        headers={"Accept": "text/csv"},
+    )
+    assert result == [Thing(id="a", size=2)]
+    assert decoded == [200]
+    assert costs == [2.5, 2.5]
+    assert all(request.params == {"token": "test-token"} for request in driver.router.requests)
+    assert all(request.headers["accept"] == "text/csv" for request in driver.router.requests)
+
+
+@pytest.mark.parametrize("retryable", [None, True])
+async def test_handwritten_post_retries_only_with_explicit_opt_in(surface: str, retryable: bool | None) -> None:
+    """POST bodies are replayed only when the operation explicitly declares that safe."""
+    driver = Driver(surface)
+    driver.router.add("/scan", status=503).add("/scan", json={"results": []})
+    operation = SpitzeisenOperationSpec(path="/scan", method="POST", retryable=retryable)
+    with nullcontext() if retryable else pytest.raises(ServerError):
+        result = await driver.call(
+            "request",
+            operation,
+            decoder=httpx2.Response.json,
+            content=b'{"ticker":"AAPL"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert result == {"results": []}
+    assert len(driver.router.requests) == (2 if retryable else 1)
+    assert all(request.method == "POST" for request in driver.router.requests)
+    assert all(request.body == b'{"ticker":"AAPL"}' for request in driver.router.requests)
+
+
+async def test_decoder_failure_is_not_retried(surface: str) -> None:
+    """A parsing bug or unexpected payload does not issue another paid API request."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things", content="bad,csv")
+
+    def fail(response: httpx2.Response) -> None:
+        raise ValueError(response.text)
+
+    with pytest.raises(ValueError, match="bad,csv"):
+        await driver.call("request", THINGS, decoder=fail)
+    assert len(driver.router.requests) == 1
+
+
+async def test_non_json_error_preserves_status_body_and_headers(surface: str) -> None:
+    """Vendor plain-text failures remain HTTP errors and bypass success decoders."""
+    driver = Driver(surface)
+    driver.router.add(
+        "/v1/things",
+        status=404,
+        content="Indicator or Country are Not Found.",
+        headers={"Content-Type": "text/plain", "X-Request-Id": "abc"},
+    )
+
+    def unexpected_decoder(_response: httpx2.Response) -> None:
+        pytest.fail("error passed to success decoder")
+
+    with pytest.raises(NotFoundError) as caught:
+        await driver.call("request", THINGS, decoder=unexpected_decoder)
+    assert caught.value.status == 404
+    assert caught.value.message == "Indicator or Country are Not Found."
+    assert caught.value.body == b"Indicator or Country are Not Found."
+    assert caught.value.headers["x-request-id"] == "abc"
+
+
+async def test_request_rejects_non_replayable_content(surface: str) -> None:
+    """Streaming request bodies require a separate design before they can be retried safely."""
+    driver = Driver(surface)
+    with pytest.raises(TypeError, match="replayable bytes"):
+        await driver.call("request", THINGS, decoder=httpx2.Response.json, content=iter([b"a"]))
+    assert not driver.router.requests
+
+
 async def test_auth_and_params_reach_the_wire(surface: str) -> None:
     """Auth strategies apply to headers or params, and query params survive verbatim."""
     driver = Driver(surface)
@@ -137,6 +251,19 @@ async def test_auth_and_params_reach_the_wire(surface: str) -> None:
     assert recorded.headers["Authorization"] == "Bearer secret"
     # Dotted filter names must not be mangled on the way out.
     assert recorded.params == {"size.gte": "3"}
+
+
+async def test_client_default_params_preserve_operation_values_and_rfc_encoding(surface: str) -> None:
+    """HTTP client defaults must not overwrite generated queries or authentication."""
+    driver = Driver(surface)
+    driver.http_client.params = {"locale": "en GB", "q": "default"}
+    driver.config.auth = QueryParamAuth("token", "secret")
+    driver.router.add("/v1/things", json={"results": []})
+    await driver.call("_request", THINGS, params=serialize_query_param(["a b", "c+d"], name="q"))
+    sent = driver.router.requests[0]
+    assert sent.params == {"locale": "en GB", "q": ["a b", "c+d"], "token": "secret"}
+    assert "locale=en%20GB" in sent.url
+    assert "q=a%20b&q=c%2Bd" in sent.url
 
 
 async def test_query_param_auth(surface: str) -> None:

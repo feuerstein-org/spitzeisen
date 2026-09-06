@@ -10,6 +10,12 @@ from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE, assemble_smithy
 from spitzeisen.codegen.exceptions import CodegenError
 
 
+@pytest.fixture(autouse=True)
+def alloy_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Process-boundary tests do not download dependencies."""
+    monkeypatch.setattr("spitzeisen.codegen.assembly.alloy_model_path", lambda: Path("/tools/alloy.jar"))
+
+
 def test_assembly_invokes_pinned_cli_with_all_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -38,6 +44,7 @@ def test_assembly_invokes_pinned_cli_with_all_sources(
     assert model == {"smithy": "2.0", "shapes": {}}
     assert captured[:5] == ["coursier", "launch", SMITHY_CLI_COORDINATE, "--", "ast"]
     assert captured[-2:] == [str(first.resolve()), str(second.resolve())]
+    assert "/tools/alloy.jar" in captured
 
 
 def test_assembly_rejects_missing_source(tmp_path: Path) -> None:

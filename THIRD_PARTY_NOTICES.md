@@ -18,6 +18,11 @@ license and is resolved by Coursier rather than vendored. The bundled plugin JAR
 Spitzeisen's compiled generator, Smithy trait definitions, and the notice below; it is not a fat
 JAR of dependencies.
 
+The generator uses [Alloy](https://github.com/disneystreaming/alloy) `alloy-core` version 0.3.40
+for the `simpleRestJson` protocol definition. Build integration tests also use the matching
+`alloy-protocol-tests` artifact and its published cases. These Apache-2.0 dependencies are resolved
+through Gradle/Coursier, retain their original metadata and licenses, and are not vendored.
+
 ## smithy-python writer concepts and adaptation
 
 The small Java `PythonWriter` adapts the symbol/import approach from
