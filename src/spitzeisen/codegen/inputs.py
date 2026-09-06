@@ -4,7 +4,7 @@ import json
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import httpcore
 import httpx
@@ -15,9 +15,7 @@ from spitzeisen.codegen.assembly import assemble_smithy
 from spitzeisen.codegen.diagnostics import ModelImportWarning
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.java_frontend import FrontendResult, compile_smithy_frontend
-from spitzeisen.codegen.openapi import import_openapi
-
-type ModelInputType = Literal["openapi", "jsonschema"]
+from spitzeisen.codegen.openapi import import_openapi, validate_openapi_model_presence, validate_openapi_version
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +23,6 @@ class BuildInputs:
     """Pydantic model input and Java-emitted SDK artifacts."""
 
     model_schema: dict[str, Any]
-    model_input_type: ModelInputType
     frontend: FrontendResult
     warnings: tuple[ModelImportWarning, ...]
 
@@ -97,15 +94,13 @@ def load_compile_inputs(
         raise CodegenError(detail="provide either an OpenAPI source or at least one native Smithy source")
     if source is not None:
         raw_openapi = load_document(source=source, timeout=timeout)
+        validate_openapi_version(raw_openapi)
+        validate_openapi_model_presence(raw_openapi)
         imported = import_openapi(raw_openapi)
         assembled = assemble_smithy(imported.model, overlays)
-        model_schema = raw_openapi
-        model_input_type: ModelInputType = "openapi"
         import_warnings = imported.warnings
     else:
         assembled = assemble_smithy({"smithy": "2.0", "shapes": {}}, (*smithy_sources, *overlays))
-        model_schema = {}
-        model_input_type = "jsonschema"
         import_warnings = ()
     working_directory = smithy_sources[0].parent if smithy_sources else overlays[0].parent if overlays else None
     frontend = compile_smithy_frontend(
@@ -117,12 +112,15 @@ def load_compile_inputs(
         python_settings=python_settings,
         working_directory=working_directory,
     )
-    if smithy_sources:
-        model_schema = frontend.model_schema
-    warnings = import_warnings
+    warnings = (
+        *import_warnings,
+        *(
+            ModelImportWarning(header="Smithy client compatibility opt-in", detail=warning)
+            for warning in frontend.manifest.warnings
+        ),
+    )
     return BuildInputs(
-        model_schema=model_schema,
-        model_input_type=model_input_type,
+        model_schema=frontend.model_schema,
         frontend=frontend,
         warnings=warnings,
     )

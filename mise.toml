@@ -22,7 +22,7 @@ run = "uv run python build_sync.py --check"
 [tasks.codegen]
 description = "Import OpenAPI, assemble its Smithy overlay, and regenerate the example SDK"
 depends = ["install-codegen-frontend"]
-run = "uv run spitzeisen-gen generate --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen generate --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --python-settings examples/spec/python.json --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.import-openapi]
 description = "Write the weather OpenAPI conversion as an inspectable Smithy JSON AST"
@@ -31,7 +31,7 @@ run = "uv run spitzeisen-gen import-openapi --path examples/spec/vendor.json --o
 [tasks.check-codegen]
 description = "Fail if any generated example SDK output is stale"
 depends = ["check-codegen-frontend"]
-run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --python-settings examples/spec/python.json --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.install-codegen-frontend]
 description = "Build, test, and install the reproducible Java Smithy plugin into the Python package"

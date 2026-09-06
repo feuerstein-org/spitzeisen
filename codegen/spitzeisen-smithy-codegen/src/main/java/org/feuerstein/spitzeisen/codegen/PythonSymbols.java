@@ -1,14 +1,12 @@
 package org.feuerstein.spitzeisen.codegen;
 
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import software.amazon.smithy.codegen.core.Symbol;
 import software.amazon.smithy.codegen.core.SymbolProvider;
 import software.amazon.smithy.model.Model;
+import software.amazon.smithy.model.neighbor.Walker;
 import software.amazon.smithy.model.node.Node;
 import software.amazon.smithy.model.node.ObjectNode;
 import software.amazon.smithy.model.shapes.MemberShape;
@@ -62,11 +60,9 @@ final class PythonSymbols implements SymbolProvider {
           "cls");
   static final Set<String> BUILTINS =
       Set.of("int", "str", "float", "bool", "bytes", "dict", "list", "set", "object");
-  private final Model model;
   private final PythonSettings settings;
   private final ServiceShape service;
-  private final Map<String, String> allocated = new HashMap<>();
-  private final Map<String, Set<String>> scopes = new HashMap<>();
+  private final PythonNames names = new PythonNames();
 
   /**
    * Creates a symbol provider for a prepared service.
@@ -75,9 +71,13 @@ final class PythonSymbols implements SymbolProvider {
    * @param settings validated Python target settings
    */
   PythonSymbols(Model model, PythonSettings settings) {
-    this.model = model;
     this.settings = settings;
     service = model.expectShape(settings.service(), ServiceShape.class);
+    var closure = new Walker(model).walkShapes(service);
+    names.reserve(
+        "models", Set.of("Async" + settings.clientName(), "Sync" + settings.clientName()));
+    // Allocate model names in shape order, independent of operation traversal.
+    closure.stream().filter(Shape::isStructureShape).sorted().forEach(this::toSymbol);
   }
 
   @Override
@@ -90,7 +90,7 @@ final class PythonSymbols implements SymbolProvider {
           entry.expectStringMember("symbol").getValue());
     }
     String name =
-        allocate("models", shape.getId().toString(), pascal(shape.getId().getName(service)));
+        names.allocate("models", shape.getId().toString(), pascal(shape.getId().getName(service)));
     return symbol(settings.packageName() + ".models." + snake(name), name).toBuilder()
         .definitionFile("models/" + snake(name) + ".py")
         .build();
@@ -99,89 +99,6 @@ final class PythonSymbols implements SymbolProvider {
   @Override
   public String toMemberName(MemberShape member) {
     return snake(member.getMemberName());
-  }
-
-  /**
-   * Allocates deterministic identifiers in a lexical scope.
-   *
-   * @return resolved Python source or identifier
-   * @param scope lexical allocation scope
-   * @param key stable identity within the scope
-   * @param preferred preferred Python name
-   */
-  String allocate(String scope, String key, String preferred) {
-    return allocated.computeIfAbsent(
-        scope + ":" + key,
-        ignored -> {
-          var used = scopes.computeIfAbsent(scope, unused -> new HashSet<>());
-          String name = preferred;
-          for (int suffix = 2; used.contains(name); suffix++) {
-            name = preferred + "_" + suffix;
-          }
-          used.add(name);
-          return name;
-        });
-  }
-
-  /**
-   * Reserves runtime and synthesized names before allocating modeled names.
-   *
-   * @param scope lexical allocation scope
-   * @param names identifiers reserved by generated code
-   */
-  void reserve(String scope, Set<String> names) {
-    scopes.computeIfAbsent(scope, ignored -> new HashSet<>()).addAll(names);
-  }
-
-  /**
-   * Maps a supported HTTP input shape to a Python annotation.
-   *
-   * @return resolved Python source or identifier
-   * @param shape modeled shape
-   * @param writer destination source writer
-   * @throws IllegalArgumentException if the model or setting cannot be represented by this target
-   */
-  String type(Shape shape, PythonWriter writer) {
-    if (settings.externalModels().containsKey(shape.getId().toString())) {
-      return writer.reference(toSymbol(shape));
-    }
-    return switch (shape.getType()) {
-      case BOOLEAN -> "bool";
-      case BYTE, SHORT, INTEGER, LONG, BIG_INTEGER -> "int";
-      case FLOAT, DOUBLE -> "float";
-      case BIG_DECIMAL -> writer.reference("decimal", "Decimal");
-      case STRING -> "str";
-      case BLOB -> "bytes";
-      case TIMESTAMP -> writer.reference("datetime", "datetime");
-      case ENUM ->
-          literals(
-              shape.asEnumShape().orElseThrow().getEnumValues().values().stream()
-                  .map(Node::from)
-                  .toList(),
-              writer);
-      case INT_ENUM ->
-          literals(
-              shape.asIntEnumShape().orElseThrow().getEnumValues().values().stream()
-                  .map(Node::from)
-                  .toList(),
-              writer);
-      case LIST, SET ->
-          (shape.isListShape() ? "list" : "set")
-              + "["
-              + type(model.expectShape(shape.members().iterator().next().getTarget()), writer)
-              + "]";
-      case MAP -> {
-        var map = shape.asMapShape().orElseThrow();
-        yield "dict["
-            + type(model.expectShape(map.getKey().getTarget()), writer)
-            + ", "
-            + type(model.expectShape(map.getValue().getTarget()), writer)
-            + "]";
-      }
-      default ->
-          throw new IllegalArgumentException(
-              "unsupported Python HTTP input shape " + shape.getId());
-    };
   }
 
   /**

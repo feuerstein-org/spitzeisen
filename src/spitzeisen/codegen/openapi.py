@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
-from copy import deepcopy
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -23,30 +24,6 @@ _IGNORED_DIAGNOSTICS = frozenset(
     {"Unable to automatically account for exclusiveMin/Max on decimal type Double"},
 )
 
-# smithy-translate 0.7.8 advertises OpenAPI 3.x support, but its 3.1 path emits placeholder
-# structures even for ordinary scalar schemas. A 3.0 compatibility projection is safe only
-# when these genuinely 3.1-only JSON Schema features are absent.
-_UNSUPPORTED_31_KEYWORDS = frozenset(
-    {
-        "$anchor",
-        "$defs",
-        "$dynamicAnchor",
-        "$dynamicRef",
-        "$vocabulary",
-        "contentEncoding",
-        "contentMediaType",
-        "contentSchema",
-        "dependentRequired",
-        "dependentSchemas",
-        "maxContains",
-        "minContains",
-        "prefixItems",
-        "propertyNames",
-        "unevaluatedItems",
-        "unevaluatedProperties",
-    },
-)
-
 
 @dataclass(frozen=True, slots=True)
 class ImportedSmithy:
@@ -54,6 +31,42 @@ class ImportedSmithy:
 
     model: dict[str, Any]
     warnings: tuple[ModelImportWarning, ...]
+
+
+def _schemas(value: object, path: str = "", *, schema: bool = False) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Locate schema objects, keeping property names and example data out of keyword checks."""
+    if isinstance(value, list):
+        for index, item in enumerate(cast("list[object]", value)):
+            yield from _schemas(item, f"{path}/{index}", schema=schema)
+    elif isinstance(value, dict):
+        mapping = cast("dict[str, Any]", value)
+        if schema:
+            yield path, mapping
+            for key in ("properties", "patternProperties", "$defs", "definitions"):
+                for name, item in mapping.get(key, {}).items():
+                    yield from _schemas(item, f"{path}/{key}/{name}", schema=True)
+            for key in ("items", "additionalProperties", "not", "allOf", "oneOf", "anyOf"):
+                yield from _schemas(mapping.get(key), f"{path}/{key}", schema=True)
+        else:
+            for key, item in mapping.items():
+                if key in {"example", "examples"} or key.startswith("x-"):
+                    continue
+                yield from _schemas(item, f"{path}/{key}", schema=key == "schema" or path == "/components/schemas")
+
+
+def validate_openapi_model_presence(spec: dict[str, Any]) -> None:
+    """Reject response presence information lost by routing the model backend through Smithy."""
+    for path, schema in _schemas(spec):
+        response = path.startswith("/components/schemas/") or "/responses/" in path
+        if response and ("default" in schema or schema.get("nullable") is True):
+            raise CodegenError(
+                header="OpenAPI presence semantics cannot be preserved by smithy-translate",
+                detail=(
+                    f"{path} uses default or nullable, which smithy-translate {SMITHY_TRANSLATE_VERSION} drops. "
+                    "Run `spitzeisen-gen import-openapi` to inspect the imported model, encode the intended "
+                    "presence with Smithy @default/@clientOptional traits, and generate with --smithy."
+                ),
+            )
 
 
 def _converter_command() -> list[str]:
@@ -85,75 +98,19 @@ def _converter_command() -> list[str]:
     )
 
 
-def _project_schema_31(value: object, path: str) -> object:  # noqa: C901
-    """Project the small compatible subset of OpenAPI 3.1 schemas into 3.0."""
-    if isinstance(value, list):
-        sequence = cast("list[object]", value)
-        return [_project_schema_31(item, f"{path}/{index}") for index, item in enumerate(sequence)]
-    if not isinstance(value, dict):
-        return value
-    mapping = cast("dict[str, object]", value)
-    unsupported = sorted(_UNSUPPORTED_31_KEYWORDS & mapping.keys())
-    if unsupported:
-        raise CodegenError(
-            header="OpenAPI 3.1 document cannot be projected for smithy-translate",
-            detail=f"{path or '/'} uses unsupported JSON Schema keywords {unsupported}",
-        )
-    if any(key in mapping for key in ("if", "then", "else")):
-        raise CodegenError(
-            header="OpenAPI 3.1 document cannot be projected for smithy-translate",
-            detail=f"{path or '/'} uses conditional JSON Schema keywords",
-        )
-    if "$ref" in mapping and len(mapping) > 1:
-        siblings = sorted(key for key in mapping if key != "$ref")
-        raise CodegenError(
-            header="OpenAPI 3.1 document cannot be projected for smithy-translate",
-            detail=f"{path or '/'} uses $ref siblings whose 3.0 semantics would be lossy: {siblings}",
-        )
-
-    projected: dict[str, object] = {
-        key: _project_schema_31(item, f"{path}/{key}") for key, item in mapping.items() if key != "const"
-    }
-    raw_type = mapping.get("type")
-    if isinstance(raw_type, list):
-        type_values = cast("list[object]", raw_type)
-        non_null = [item for item in type_values if item != "null"]
-        if len(non_null) != 1 or len(non_null) == len(type_values):
-            raise CodegenError(
-                header="OpenAPI 3.1 document cannot be projected for smithy-translate",
-                detail=f"{path or '/'} has a type union that OpenAPI 3.0 cannot express: {raw_type!r}",
-            )
-        projected["type"] = non_null[0]
-        projected["nullable"] = True
-    if "const" in mapping:
-        enum = mapping.get("enum")
-        if isinstance(enum, list) and mapping["const"] not in cast("list[object]", enum):
-            raise CodegenError(
-                header="OpenAPI 3.1 document cannot be projected for smithy-translate",
-                detail=f"{path or '/'} declares contradictory const and enum values",
-            )
-        projected["enum"] = [mapping["const"]]
-    for keyword, bound in (("exclusiveMinimum", "minimum"), ("exclusiveMaximum", "maximum")):
-        exclusive = mapping.get(keyword)
-        if isinstance(exclusive, (int, float)) and not isinstance(exclusive, bool):
-            projected[bound] = exclusive
-            projected[keyword] = True
-    return projected
-
-
-def project_openapi_for_converter(spec: dict[str, Any]) -> dict[str, Any]:
-    """Return input accepted by the pinned converter without changing the model backend input."""
+def validate_openapi_version(spec: dict[str, Any]) -> None:
+    """Accept only OpenAPI 3.0.x until the pinned importer supports 3.1 reliably."""
     version = spec.get("openapi")
-    if not isinstance(version, str) or not version.startswith("3."):
+    if not isinstance(version, str) or re.fullmatch(r"3\.0\.[0-9]+", version) is None:
         raise CodegenError(
-            header="Unsupported OpenAPI document",
-            detail="Spitzeisen's OpenAPI importer currently accepts OpenAPI 3.0 and 3.1 documents.",
+            header="Unsupported OpenAPI version",
+            detail=(
+                f"Expected OpenAPI 3.0.x; found {version!r}. "
+                f"smithy-translate {SMITHY_TRANSLATE_VERSION} does not reliably import OpenAPI 3.1, "
+                "so Spitzeisen does not accept or downgrade it. "
+                "Export a valid OpenAPI 3.0.x document or use native Smithy with --smithy."
+            ),
         )
-    if not version.startswith("3.1"):
-        return deepcopy(spec)
-    projected = cast("dict[str, Any]", _project_schema_31(spec, ""))
-    projected["openapi"] = "3.0.3"
-    return projected
 
 
 def _diagnostics(output: str) -> tuple[ModelImportWarning, ...]:
@@ -168,7 +125,7 @@ def _diagnostics(output: str) -> tuple[ModelImportWarning, ...]:
 
 def import_openapi(spec: dict[str, Any], *, working_directory: Path | None = None) -> ImportedSmithy:
     """Convert one OpenAPI document into Smithy's JSON AST using pinned community tooling."""
-    projected = project_openapi_for_converter(spec)
+    validate_openapi_version(spec)
     if working_directory is not None:
         working_directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".spitzeisen-smithy-", dir=working_directory) as temporary:
@@ -176,7 +133,7 @@ def import_openapi(spec: dict[str, Any], *, working_directory: Path | None = Non
         source = root / "openapi.json"
         output = root / "output"
         output.mkdir()
-        source.write_text(json.dumps(projected, indent=2))
+        source.write_text(json.dumps(spec, indent=2))
         command = [
             *_converter_command(),
             "openapi-to-smithy",

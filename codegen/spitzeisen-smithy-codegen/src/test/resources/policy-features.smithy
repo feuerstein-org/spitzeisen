@@ -15,16 +15,15 @@ use spitzeisen.api#excludeParameter
 use spitzeisen.api#inputAdapter
 use spitzeisen.api#notFound
 use spitzeisen.api#pageNumberPagination
-use spitzeisen.api#queryEncoding
 use spitzeisen.api#rateLimitCost
 use spitzeisen.api#result
 use spitzeisen.api#sorting
 use spitzeisen.python#modelField
 use spitzeisen.python#operation
 use spitzeisen.python#parameter
-use spitzeisen.protocols#genericRestJson
+use alloy#simpleRestJson
 
-@genericRestJson
+@simpleRestJson
 service ExampleService {
     version: "1.0"
     operations: [ListRecords, InternalOperation]
@@ -67,7 +66,7 @@ operation ListRecords {
         @httpQuery("filter")
         @parameter(name: "filters")
         @inputAdapter(id: "comma-list")
-        filter: StringList
+        filter: String
 
         @httpQuery("since")
         @inputAdapter(id: "date")
@@ -81,7 +80,6 @@ operation ListRecords {
         custom: String
 
         @httpQuery("language")
-        @queryEncoding(style: "pipeDelimited", explode: false)
         @clientDefault(value: "en")
         language: String
 

@@ -5,6 +5,7 @@ import shutil
 import zipfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from codegen_fixtures import frontend_result
@@ -25,7 +26,7 @@ def compiled(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     def load(**settings: Any) -> BuildInputs:
         received.update(settings)
-        return BuildInputs({}, "jsonschema", frontend_result(), ())
+        return BuildInputs({}, frontend_result(), ())
 
     monkeypatch.setattr(codegen_cli, "load_compile_inputs", load)
     return received
@@ -43,6 +44,41 @@ def arguments(root: Path) -> list[str]:
         "--output-path",
         str(root / "test_sdk"),
     ]
+
+
+@pytest.mark.parametrize("command", ["generate", "check", "import-openapi"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_openapi_31_fails_without_conversion_or_output_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, existing: bool
+) -> None:
+    """Every OpenAPI entry point rejects 3.1 and preserves any existing destination."""
+    source = tmp_path / "openapi.json"
+    source.write_text(json.dumps({"openapi": "3.1.0", "info": {"title": "Fixture", "version": "1"}, "paths": {}}))
+    output = tmp_path / "output"
+    destination = output / "model.json" if command == "import-openapi" else output
+    preserved = destination if command == "import-openapi" else output / "models/_generated.py"
+    if existing:
+        preserved.parent.mkdir(parents=True)
+        preserved.write_text("# existing output\n")
+    launcher = Mock()
+    monkeypatch.setattr("spitzeisen.codegen.openapi._converter_command", launcher)
+    args = [command, "--path", str(source), "--output-path", str(destination)]
+    if command != "import-openapi":
+        args.extend(["--package", "test_sdk", "--client-name", "Client"])
+
+    result = CliRunner().invoke(main, args)
+
+    assert result.exit_code == 1, result.output
+    assert "Unsupported OpenAPI version" in result.output
+    assert "3.1.0" in result.output
+    assert "OpenAPI 3.0.x" in result.output
+    assert "Traceback" not in result.output
+    launcher.assert_not_called()
+    if existing:
+        assert preserved.read_text() == "# existing output\n"
+        assert [path for path in output.rglob("*") if path.is_file()] == [preserved]
+    else:
+        assert not output.exists()
 
 
 def test_generation_preserves_extensions_and_check_detects_drift(tmp_path: Path, compiled: dict[str, Any]) -> None:
@@ -84,6 +120,36 @@ def test_target_settings_are_forwarded_to_java(tmp_path: Path, compiled: dict[st
     assert compiled["python_settings"] == settings
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_generation_policy_flags_override_settings(
+    tmp_path: Path,
+    compiled: dict[str, Any],
+    enabled: bool,
+) -> None:
+    """Generate and check apply the same explicit flag precedence, including disabling a setting."""
+    settings = tmp_path / "python.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "require_api_required_arguments": not enabled,
+            }
+        )
+    )
+    prefix = "--" if enabled else "--no-"
+    args = [
+        *arguments(tmp_path),
+        "--python-settings",
+        str(settings),
+        prefix + "require-api-required-arguments",
+    ]
+    for command in ("generate", "check"):
+        result = CliRunner().invoke(main, [command, *args])
+        assert result.exit_code == 0, result.output
+        assert compiled["python_settings"] == {
+            "require_api_required_arguments": enabled,
+        }
+
+
 @pytest.mark.parametrize("source", ["{", "[]"])
 def test_invalid_settings_fail_without_writing(tmp_path: Path, source: str) -> None:
     """Invalid JSON never reaches Java or writes SDK files."""
@@ -104,7 +170,7 @@ def test_invalid_generated_source_does_not_replace_existing_sdk(
     result.modules.append(GeneratedModule(Path("bad.py"), "class ???"))
 
     def load(**_: Any) -> BuildInputs:
-        return BuildInputs({}, "jsonschema", result, ())
+        return BuildInputs({}, result, ())
 
     monkeypatch.setattr(codegen_cli, "load_compile_inputs", load)
     root = tmp_path / "test_sdk"
@@ -124,7 +190,7 @@ def test_missing_external_model_and_dependency_report(tmp_path: Path, monkeypatc
     frontend.manifest.dependencies = ["records-runtime>=1"]
 
     def load(**_: Any) -> BuildInputs:
-        return BuildInputs({}, "jsonschema", frontend, ())
+        return BuildInputs({}, frontend, ())
 
     monkeypatch.setattr(codegen_cli, "load_compile_inputs", load)
     args = arguments(tmp_path)
@@ -172,7 +238,7 @@ def test_doctor_checks_the_packaged_frontend_without_network_access(
             "META-INF/services/software.amazon.smithy.build.SmithyBuildPlugin",
             "org.example.Plugin\n",
         )
-        for name in ("spitzeisen-api.smithy", "spitzeisen-protocols.smithy", "spitzeisen-python.smithy"):
+        for name in ("spitzeisen-api.smithy", "spitzeisen-python.smithy"):
             archive.writestr(f"META-INF/smithy/{name}", '$version: "2"\n')
     monkeypatch.setattr(codegen_cli, "PLUGIN_JAR", bundle)
 

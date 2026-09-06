@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from spitzeisen.codegen.exceptions import CodegenError
-from spitzeisen.codegen.toolchain import SMITHY_VERSION
+from spitzeisen.codegen.toolchain import ALLOY_CORE_COORDINATE, SMITHY_VERSION, alloy_model_path
 
 SMITHY_CLI_VERSION = SMITHY_VERSION
 SMITHY_CLI_COORDINATE = f"software.amazon.smithy:smithy-cli:{SMITHY_CLI_VERSION}"
@@ -28,7 +28,7 @@ def _assembler_command() -> list[str]:
             return command
     coursier = shutil.which("coursier") or shutil.which("cs")
     if coursier:
-        return [coursier, "launch", SMITHY_CLI_COORDINATE, "--"]
+        return [coursier, "launch", SMITHY_CLI_COORDINATE, ALLOY_CORE_COORDINATE, "--"]
     executable = shutil.which("smithy")
     if executable:
         return [executable]
@@ -72,6 +72,7 @@ def assemble_smithy(
             "--flatten",
             str(source),
             str(TRAIT_BUNDLE),
+            str(alloy_model_path()),
             *(str(path.resolve()) for path in sources),
         ]
         process = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603

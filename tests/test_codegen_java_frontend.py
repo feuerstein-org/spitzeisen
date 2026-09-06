@@ -19,6 +19,7 @@ from spitzeisen.codegen.java_frontend import (
     compile_smithy_frontend,
     smithy_build_command,
 )
+from spitzeisen.codegen.toolchain import ALLOY_CORE_COORDINATE
 
 
 def _model() -> dict[str, Any]:
@@ -50,6 +51,7 @@ def test_frontend_launcher_includes_every_thin_plugin_runtime_dependency(
         SMITHY_CLI_COORDINATE,
         SMITHY_JSONSCHEMA_COORDINATE,
         SMITHY_CODEGEN_CORE_COORDINATE,
+        ALLOY_CORE_COORDINATE,
         "--extra-jars",
         str(plugin),
         "--",

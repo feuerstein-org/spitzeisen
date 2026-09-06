@@ -1,7 +1,7 @@
 # Vendor specification provenance
 
 The linked OpenWeather source is HTML documentation rather than a machine-readable API
-description. `vendor.json` is therefore a committed OpenAPI 3.1 transcription of the request
+description. `vendor.json` is therefore a committed OpenAPI 3.0.3 transcription of the request
 params, API-key security scheme, and JSON response fields documented on the official
 [Current Weather page](https://openweathermap.org/api/current?collection=current_forecast).
 

@@ -84,10 +84,10 @@ def coerce_choices[T](
 # TODO: Should this live here?
 def coerce_sort(sort: object, order: object, *, separator: str = ".") -> str:
     """
-    Combine an already-coerced field and direction into the `field.direction` form.
+    Combine a field and direction into the `field.direction` wire form.
 
-    Allowed values belong to the vendor's OpenAPI params or client-owned Literal types;
-    callers validate them with `coerce_choice` before combining them here.
+    Both parts must be present. Allowed values are described by generated Literal annotations;
+    runtime enum validation is optional and belongs to the caller.
     """
     if sort is None or sort == "" or order is None or order == "":
         msg = "order or sort were not provided."
@@ -184,6 +184,9 @@ def _values(value: object) -> list[str]:
 
 def serialize_path_param(value: object, *, greedy: bool = False) -> str:
     """Serialize one Smithy HTTP label, preserving slashes only for greedy labels."""
+    if value is None or value == "":
+        msg = "HTTP path labels must have a non-empty value."
+        raise ValueError(msg)
     return quote(_stringify(value), safe="/" if greedy else "")
 
 
@@ -260,6 +263,22 @@ def _serialize_array_or_scalar(
         return [SerializedQueryParam(name, item) for item in values]
     separator = {"form": ",", "spaceDelimited": " ", "pipeDelimited": "|"}[style]
     return [SerializedQueryParam(name, separator.join(values))]
+
+
+def serialize_query_map(
+    value: Mapping[str, object] | None,
+    *,
+    reserved: Collection[str] = (),
+) -> QueryParams:
+    """Serialize Smithy httpQueryParams, preserving lists and explicit query-binding precedence."""
+    if value is None:
+        return []
+    return [
+        item
+        for name, member in value.items()
+        if name not in reserved
+        for item in serialize_query_param(member, name=name)
+    ]
 
 
 def _serialize_object(

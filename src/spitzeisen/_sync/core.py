@@ -14,17 +14,19 @@ from __future__ import annotations
 
 import functools
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Self, cast
+from urllib.parse import quote, urlencode
 
 import structlog
-from httpx2 import Client, NetworkError, Response, TimeoutException
+from httpx2 import URL, Client, NetworkError, Response, TimeoutException
 from httpx2 import QueryParams as HttpxQueryParams
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from spitzeisen.exceptions import (
     HTTP_SERVER_ERROR_MIN,
     HTTP_TOO_MANY_REQUESTS,
+    HTTPError,
     MaxRetriesExceededError,
     NotFoundError,
     TransportError,
@@ -102,10 +104,37 @@ class SyncSpitzeisenApi:
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> JsonValue:
-        """
-        Perform one rate-limited request, retrying retryable statuses and transport failures.
+        """Fetch decoded JSON through the shared transport used by handwritten operations."""
+        return self.request(
+            operation_spec,
+            decoder=_decode_json,
+            params=params,
+            headers=headers,
+            path_params=path_params,
+        )
 
-        Returns the decoded JSON body.
+    def request[ResultT](
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        decoder: Callable[[Response], ResultT],
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        content: bytes | None = None,
+        path_params: Mapping[str, object] | None = None,
+    ) -> ResultT:
+        """
+        Execute a handwritten operation with shared authentication, rate limiting, and retries.
+
+        The synchronous decoder receives the buffered successful HTTP response, including its
+        bytes, headers, and status. It may parse CSV, return bytes, or construct a Pydantic model.
+        Decoder failures propagate unchanged and never trigger another HTTP request. HTTP errors
+        are raised before decoding and retain their response body and headers.
+
+        Supply an already serialized bytes body and its Content-Type header for requests with a
+        payload. Only replayable bytes are accepted. Retries follow the operation's method and
+        retryable setting; POST and PATCH are not retried by default. The client config owns the
+        usual request timeout and connection lifecycle.
 
         Raises:
             MaxRetriesExceededError: If 429 responses persist past `max_retries`.
@@ -115,26 +144,36 @@ class SyncSpitzeisenApi:
                 NotFoundError on 404), raised immediately without retrying.
 
         """
-        url = operation_spec.url(self.config.base_url, **path_params)
+        if content is not None and not isinstance(cast("object", content), bytes):
+            msg = "Request content must be replayable bytes"
+            raise TypeError(msg)
+        url = operation_spec.url(self.config.base_url, **(path_params or {}))
+        attempts = self.config.max_retries if operation_spec.can_retry else 0
         request_params = list(params or [])
         request_headers = dict(headers or {})
         auth_params: dict[str, str] = {}
         self.config.auth.apply(request_headers, auth_params)
         request_params.extend(SerializedQueryParam(name, value) for name, value in auth_params.items())
-        httpx_params = HttpxQueryParams([(item.name, item.value) for item in request_params])
+        httpx_params = URL(url).params.merge(HttpxQueryParams([(item.name, item.value) for item in request_params]))
 
-        for attempt in range(self.config.max_retries + 1):
+        for attempt in range(attempts + 1):
             try:
                 with self.config.limiter(operation_spec.cost):
-                    response = self._http_client.request(
-                        "GET",
+                    client = self._http_client
+                    request = client.build_request(
+                        operation_spec.method,
                         url,
                         params=httpx_params,
                         headers=request_headers,
                         timeout=self.config.request_timeout,
+                        content=content,
                     )
+                    # Encode after HTTP client defaults are merged. Smithy uses %20 for spaces.
+                    query = urlencode(request.url.params.multi_items(), quote_via=quote).encode("ascii")
+                    request.url = request.url.copy_with(query=query or None)
+                    response = client.send(request)
             except RETRYABLE as exc:
-                if attempt >= self.config.max_retries:
+                if attempt >= attempts:
                     raise TransportError(exc) from exc
                 logger.warning(
                     "request_retrying",
@@ -150,13 +189,13 @@ class SyncSpitzeisenApi:
             status = response.status_code
             if not _is_retryable(status):
                 if status >= 400:  # noqa: PLR2004 - the HTTP error boundary
-                    raise http_error_from_status(status, _message_of(response))
-                return cast("JsonValue", response.json())
+                    raise _error_of(response)
+                return decoder(response)
 
-            if attempt >= self.config.max_retries:
-                error = http_error_from_status(status, _message_of(response))
-                if status == HTTP_TOO_MANY_REQUESTS:
-                    raise MaxRetriesExceededError(self.config.max_retries, status) from error
+            if attempt >= attempts:
+                error = _error_of(response)
+                if status == HTTP_TOO_MANY_REQUESTS and operation_spec.can_retry:
+                    raise MaxRetriesExceededError(attempts, status) from error
                 raise error
             logger.warning(
                 "request_retrying",
@@ -288,10 +327,18 @@ class SyncSpitzeisenApi:
         return override if override is not None else self.config.on_validation_error
 
     def _validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
-        """Apply opt-in strict validation to one generated keyword argument."""
-        if not self.config.strict_inputs:
+        """Validate supplied values while preserving None as the wire-omission escape hatch."""
+        if value is None or not self.config.strict_inputs:
             return value
         return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
+
+    def _validate_response[ModelT: BaseModel](self, value: JsonObject, model: type[ModelT]) -> ModelT:
+        """Parse one response using the client's optional constraint checks."""
+        return model.model_validate(value, context=self._response_validation_context())
+
+    def _response_validation_context(self) -> dict[str, bool]:
+        """Snapshot the policy for one validation, including every nested value."""
+        return {"strict_response_validation": self.config.strict_response_validation}
 
     def _validate_records[ModelT: BaseModel](
         self,
@@ -307,31 +354,45 @@ class SyncSpitzeisenApi:
         on failure we rerun the validation this time with individual items and log the failing ones.
         """
         adapter = _list_adapter(model)
+        context = self._response_validation_context()
         if mode == "raise":
-            return cast("list[ModelT]", adapter.validate_python(records))
+            return cast("list[ModelT]", adapter.validate_python(records, context=context))
         try:
-            return cast("list[ModelT]", adapter.validate_python(records))
+            return cast("list[ModelT]", adapter.validate_python(records, context=context))
         except ValidationError:
             validated: list[ModelT] = []
             for record in records:
                 try:
-                    validated.append(model.model_validate(record))
+                    validated.append(model.model_validate(record, context=context))
                 except ValidationError as exc:
                     logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
             return validated
 
 
+def _decode_json(response: Response) -> JsonValue:
+    """Decode the JSON body after transport and HTTP errors have been handled."""
+    return cast("JsonValue", response.json())
+
+
+def _error_of(response: Response) -> HTTPError:
+    """Preserve the response independently of its media type or error envelope."""
+    return http_error_from_status(
+        response.status_code,
+        _message_of(response),
+        body=response.content,
+        headers=response.headers,
+    )
+
+
 def _message_of(response: Response) -> str:
     """Best-effort error message from an error response, without letting decoding fail the call."""
-    # TODO: Add support for a single string returned in body?
-    # Also maybe just return the dict (stringified and truncated) instead of fishing for keys
     try:
         body = cast("JsonValue", response.json())
     except Exception:  # noqa: BLE001 - an unparseable error body must not mask the HTTP error
-        return ""
+        return response.text
     if isinstance(body, dict):
-        for key in ("error", "message", "detail"):
+        for key in ("message", "Message", "error", "detail"):
             value = body.get(key)
             if isinstance(value, str):
                 return value
-    return ""
+    return body if isinstance(body, str) else response.text

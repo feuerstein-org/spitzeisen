@@ -60,6 +60,7 @@ from spitzeisen.params import (
     coerce_timestamps,
     require_value,
     serialize_path_param,
+    serialize_query_map,
     serialize_query_param,
 )
 
@@ -104,6 +105,7 @@ __all__ = (
     "map_bounded",
     "require_value",
     "serialize_path_param",
+    "serialize_query_map",
     "serialize_query_param",
     "sync_single_bucket",
 )

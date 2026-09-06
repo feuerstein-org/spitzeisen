@@ -7,9 +7,9 @@ use smithy.api#httpLabel
 use smithy.api#httpPayload
 use spitzeisen.api#notFound
 use spitzeisen.api#result
-use spitzeisen.protocols#genericRestJson
+use alloy#simpleRestJson
 
-@genericRestJson
+@simpleRestJson
 service WeatherService {
     version: "1.0"
     operations: [GetWeather]

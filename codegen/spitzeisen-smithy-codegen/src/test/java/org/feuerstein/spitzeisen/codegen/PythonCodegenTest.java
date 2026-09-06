@@ -7,8 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,8 +29,8 @@ final class PythonCodegenTest {
       """
       $version: "2"
       namespace example
-      use spitzeisen.protocols#genericRestJson
-      @genericRestJson
+      use alloy#simpleRestJson
+      @simpleRestJson
       service ExampleService { version: "1", operations: [Get] }
       @readonly
       @http(method: "GET", uri: "/items/{key+}", code: 200)
@@ -40,6 +43,7 @@ final class PythonCodegenTest {
           output := { @httpPayload item: Item }
       }
       structure Item { @required id: String }
+      list HeaderValues { member: String }
       """;
 
   @Test
@@ -50,19 +54,26 @@ final class PythonCodegenTest {
     generate(MODEL, "{}");
     var source = Files.readString(output.resolve("sdk/_async/_generated/get.py"));
     assertTrue(source.contains("async def get_raw("));
-    assertTrue(source.contains("key: str,"));
-    assertFalse(source.contains("key: str | None"));
+    assertTrue(source.contains("key: str | None = None,"));
     assertTrue(source.contains("greedy=True"));
     assertTrue(source.contains("coerce_timestamp(since, \"date-time\""));
     assertTrue(source.contains("coerce_timestamp(modified, \"http-date\""));
-    assertTrue(source.contains("return Item.model_validate(raw)"));
+    assertTrue(source.contains("return self._validate_response(raw, Item)"));
     var manifest = Node.parse(Files.readString(output.resolve("manifest.json"))).expectObjectNode();
     assertEquals(
-        Set.of("files", "models", "model_names", "model_aliases", "model_paths", "dependencies"),
+        Set.of("files", "models", "model_names", "model_aliases", "dependencies", "warnings"),
         manifest.getStringMap().keySet());
     assertFalse(Files.exists(output.resolve("service-plan.json")));
     assertTrue(manifest.expectObjectMember("files").expectBooleanMember("__init__.py").getValue());
     assertFalse(manifest.expectObjectMember("files").expectBooleanMember("_exports.py").getValue());
+    try (var paths = Files.walk(output.resolve("sdk"))) {
+      assertEquals(
+          manifest.expectObjectMember("files").getStringMap().keySet(),
+          paths
+              .filter(Files::isRegularFile)
+              .map(path -> output.resolve("sdk").relativize(path).toString().replace('\\', '/'))
+              .collect(Collectors.toSet()));
+    }
   }
 
   @Test
@@ -127,6 +138,105 @@ final class PythonCodegenTest {
                     nested,
                     "{\"external_models\":{\"example#Child\":{\"module\":\"external\",\"symbol\":\"Child\"}}}"));
     assertTrue(error.getMessage().contains("inside generated models"));
+    assertFalse(Files.exists(output.resolve("sdk")));
+    assertFalse(Files.exists(output.resolve("model-schema.json")));
+  }
+
+  @Test
+  void resourceOperationsSupportMixinsSharedIoAndRecursiveModels() throws Exception {
+    generate(
+        """
+        $version: "2"
+        namespace example
+        use alloy#simpleRestJson
+        @simpleRestJson
+        service ExampleService {
+            version: "1"
+            resources: [Items]
+            operations: [Other, Excluded]
+        }
+        resource Items { operations: [Get] }
+        @readonly @http(method: "GET", uri: "/items")
+        operation Get { input: SharedInput, output: SharedOutput }
+        @readonly @http(method: "GET", uri: "/other")
+        operation Other { input: SharedInput, output: SharedOutput }
+        @spitzeisen.api#excludeOperation
+        @http(method: "POST", uri: "/excluded")
+        operation Excluded { input: SharedInput, output: SharedOutput }
+        @mixin
+        structure Query { @httpQuery("search") search: String }
+        structure SharedInput with [Query] {}
+        structure SharedOutput { @httpPayload item: Item }
+        structure Item { @required id: String, child: Item }
+        """,
+        "{}");
+    for (String surface : Set.of("_async", "_sync")) {
+      var generated = output.resolve("sdk/" + surface + "/_generated");
+      for (String operation : Set.of("get", "other")) {
+        var source = Files.readString(generated.resolve(operation + ".py"));
+        assertTrue(source.contains("search: str | None = None,"));
+        assertTrue(source.contains("return self._validate_response(raw, Item)"));
+        assertTrue(Files.exists(output.resolve("sdk/" + surface + "/" + operation + ".py")));
+      }
+      var client = Files.readString(generated.resolve("client.py"));
+      assertTrue(client.contains("self.get_api = "));
+      assertTrue(client.contains("self.other_api = "));
+      assertFalse(client.contains("excluded"));
+      assertFalse(Files.exists(generated.resolve("excluded.py")));
+    }
+    var manifest = Node.parse(Files.readString(output.resolve("manifest.json"))).expectObjectNode();
+    assertEquals(1, manifest.expectArrayMember("models").size());
+    var schema =
+        Node.parse(Files.readString(output.resolve("model-schema.json"))).expectObjectNode();
+    var definitions = schema.expectObjectMember("$defs");
+    assertEquals(Set.of("Item"), definitions.getStringMap().keySet());
+    assertTrue(Node.printJson(definitions).contains("#/$defs/Item"));
+  }
+
+  @Test
+  void namingDoesNotDependOnServiceOperationOrder() throws Exception {
+    var source =
+        MODEL
+                .replace("operations: [Get]", "operations: [Get, Other]")
+                .replace(
+                    "operation Get",
+                    "@spitzeisen.python#operation(module: \"lookup\", method: \"lookup\", accessor: \"lookup\") operation Get")
+            + """
+            @readonly @http(method: "GET", uri: "/other")
+            @spitzeisen.python#operation(module: "lookup", method: "lookup", accessor: "lookup")
+            operation Other { output := { @httpPayload item: Item } }
+            """;
+    var first = output.resolve("first");
+    var second = output.resolve("second");
+    generate(source, "{}", first);
+    generate(source.replace("operations: [Get, Other]", "operations: [Other, Get]"), "{}", second);
+    assertEquals(artifacts(first), artifacts(second));
+    assertTrue(
+        Files.readString(first.resolve("sdk/_async/_generated/lookup.py"))
+            .contains("/items/{key}"));
+    assertTrue(
+        Files.readString(first.resolve("sdk/_async/_generated/lookup_2.py")).contains("/other"));
+  }
+
+  @Test
+  void renderingFailuresDoNotFlushPendingSdkFiles() {
+    var source =
+        MODEL.replace("operations: [Get]", "operations: [Get, Other]")
+            + """
+            @readonly @http(method: "GET", uri: "/other")
+            operation Other {
+                input := {
+                    @httpQuery("search")
+                    @spitzeisen.api#inputAdapter(id: "missing")
+                    search: String
+                }
+                output := { @httpPayload item: Item }
+            }
+            """;
+    var error = assertThrows(IllegalArgumentException.class, () -> generate(source, "{}"));
+    assertTrue(error.getMessage().contains("input adapter is not registered: missing"));
+    assertFalse(Files.exists(output.resolve("sdk")));
+    assertFalse(Files.exists(output.resolve("manifest.json")));
   }
 
   @Test
@@ -136,19 +246,49 @@ final class PythonCodegenTest {
     generate(MODEL.replace("operations: [Get]", "operations: [Get, Other]") + second, "{}");
     var manifest = Node.parse(Files.readString(output.resolve("manifest.json"))).expectObjectNode();
     assertEquals(1, manifest.expectArrayMember("models").size());
-    assertEquals(2, manifest.expectArrayMember("model_paths").size());
   }
 
   @ParameterizedTest
   @ValueSource(
       strings = {
         "{\"enabled_integrations\":[\"unused\"]}",
+        "{\"require_api_required_arguments\":\"true\"}",
+        "{\"strict_response_validation\":1}",
         "{\"external_models\":{\"example#Item\":{\"module\":\"bad-import\",\"symbol\":\"Record\"}}}",
         "{\"external_models\":{\"example#Absent\":{\"module\":\"external\",\"symbol\":\"Record\"}}}",
         "{\"input_adapters\":{\"bad\":{\"function\":{\"module\":\"m\",\"name\":\"f\"},\"public_type\":\"str\"}}}"
       })
   void rejectsInvalidSettings(String settings) {
     assertThrows(RuntimeException.class, () -> generate(MODEL, settings));
+  }
+
+  @Test
+  void compatibilityOptInsAreExplicitAndDiagnosed() throws Exception {
+    generate(MODEL, "{\"require_api_required_arguments\":true}");
+    var source = Files.readString(output.resolve("sdk/_async/_generated/get.py"));
+    assertTrue(source.contains("key: str,"));
+    assertFalse(source.contains("key: str | None"));
+    var manifest = Node.parse(Files.readString(output.resolve("manifest.json"))).expectObjectNode();
+    assertEquals(1, manifest.expectArrayMember("warnings").size());
+  }
+
+  @Test
+  void responseValidationIsConfiguredAtRuntime() {
+    var error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> generate(MODEL, "{\"strict_response_validation\":false}"));
+    assertTrue(error.getMessage().contains("runtime client configuration"));
+  }
+
+  @Test
+  void clientOptionalCannotBeOverriddenByCustomDefaults() {
+    var source =
+        MODEL.replace(
+            "@httpQuery(\"since\") since: Timestamp",
+            "@clientOptional @spitzeisen.api#clientDefault(value: \"old\") @httpQuery(\"since\") since: String");
+    var error = assertThrows(IllegalArgumentException.class, () -> generate(source, "{}"));
+    assertTrue(error.getMessage().contains("clientDefault conflicts with @clientOptional"));
   }
 
   @ParameterizedTest
@@ -170,7 +310,70 @@ final class PythonCodegenTest {
         RuntimeException.class,
         () -> generate(MODEL.replace("method: \"GET\"", "method: \"POST\""), "{}"));
     assertThrows(
-        RuntimeException.class, () -> generate(MODEL.replace("@genericRestJson", ""), "{}"));
+        RuntimeException.class, () -> generate(MODEL.replace("@simpleRestJson", ""), "{}"));
+    assertFalse(Files.exists(output.resolve("manifest.json")));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "@spitzeisen.api#queryEncoding(style: \"form\", explode: false) @httpQuery(\"since\") since: String",
+        "@httpQuery(\"since\") since: alloy#LocalDate",
+        "@httpHeader(\"X-Values\") values: HeaderValues",
+        "@httpPayload body: String"
+      })
+  void unsupportedInputSemanticsAreRejected(String input) {
+    var error =
+        assertThrows(
+            RuntimeException.class,
+            () -> generate(MODEL.replace("@httpQuery(\"since\") since: Timestamp", input), "{}"));
+    assertTrue(error.getMessage().contains("support"));
+    assertFalse(Files.exists(output.resolve("manifest.json")));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "structure Item { value: Choice }\nunion Choice { a: String, b: Integer }",
+        "structure Item { value: Blob }",
+        "structure Item { @timestampFormat(\"epoch-seconds\") value: Timestamp }",
+        "structure Item { @alloy#nullable value: String }"
+      })
+  void unsupportedResponseSemanticsAreRejectedRecursively(String response) {
+    var error =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                generate(MODEL.replace("structure Item { @required id: String }", response), "{}"));
+    assertTrue(error.getMessage().contains("Alloy client subset"), error.getMessage());
+    assertFalse(Files.exists(output.resolve("manifest.json")));
+  }
+
+  @Test
+  void unsupportedProtocolCannotBeSelectedByPreference() {
+    assertThrows(
+        RuntimeException.class,
+        () ->
+            generate(
+                MODEL
+                    .replace("@simpleRestJson", "@other")
+                    .replace(
+                        "use alloy#simpleRestJson",
+                        "@trait(selector: \"service\") @protocolDefinition structure other {}"),
+                "{\"protocol_preference\":[\"example#other\"]}"));
+    assertFalse(Files.exists(output.resolve("manifest.json")));
+  }
+
+  @Test
+  void scalarResponsesCannotBypassTheSubsetWithAnExternalModel() {
+    var error =
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                generate(
+                    MODEL.replace("structure Item { @required id: String }", "string Item"),
+                    "{\"external_models\":{\"example#Item\":{\"module\":\"external\",\"symbol\":\"Item\"}}}"));
+    assertTrue(error.getMessage().contains("response records must be JSON objects"));
     assertFalse(Files.exists(output.resolve("manifest.json")));
   }
 
@@ -190,6 +393,20 @@ final class PythonCodegenTest {
   }
 
   private void generate(String source, String pythonSettings) {
+    generate(source, pythonSettings, output);
+  }
+
+  private static Map<String, String> artifacts(Path root) throws Exception {
+    var result = new TreeMap<String, String>();
+    try (var paths = Files.walk(root)) {
+      for (var path : paths.filter(Files::isRegularFile).toList()) {
+        result.put(root.relativize(path).toString(), Files.readString(path));
+      }
+    }
+    return result;
+  }
+
+  private static void generate(String source, String pythonSettings, Path output) {
     var model =
         Model.assembler()
             .discoverModels()
@@ -198,7 +415,7 @@ final class PythonCodegenTest {
             .unwrap();
     var settings =
         Node.parse(
-                "{\"package\":\"test_sdk\",\"client_name\":\"Client\",\"python\":"
+                "{\"service\":\"example#ExampleService\",\"package\":\"test_sdk\",\"client_name\":\"Client\",\"python\":"
                     + pythonSettings
                     + "}")
             .expectObjectNode();

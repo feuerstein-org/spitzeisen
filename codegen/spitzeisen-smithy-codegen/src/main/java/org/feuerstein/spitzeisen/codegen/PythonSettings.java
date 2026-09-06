@@ -1,5 +1,6 @@
 package org.feuerstein.spitzeisen.codegen;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -17,7 +18,8 @@ record PythonSettings(
     String vendor,
     Map<String, Node> externalModels,
     Map<String, Node> inputAdapters,
-    List<String> protocols) {
+    List<String> protocols,
+    boolean requireApiRequiredArguments) {
 
   /** Reads artifact identity and optional Python-only settings, rejecting unknown fields. */
   static PythonSettings from(Model model, ObjectNode node) {
@@ -38,8 +40,16 @@ record PythonSettings(
     String packageName = module(node.expectStringMember("package").getValue());
     String clientName = identifier(node.expectStringMember("client_name").getValue());
     var target = node.getObjectMember("python").orElse(Node.objectNode());
+    if (target.containsMember("strict_response_validation")) {
+      throw new IllegalArgumentException(
+          "strict_response_validation is a runtime client configuration option; remove it from Python generator settings");
+    }
     target.expectNoAdditionalProperties(
-        Set.of("external_models", "input_adapters", "protocol_preference"));
+        Set.of(
+            "external_models",
+            "input_adapters",
+            "protocol_preference",
+            "require_api_required_arguments"));
     var external =
         target.getObjectMember("external_models").orElse(Node.objectNode()).getStringMap();
     external.forEach(
@@ -80,7 +90,8 @@ record PythonSettings(
         node.getStringMemberOrDefault("vendor", service.getName()),
         external,
         adapters,
-        protocols);
+        protocols,
+        target.getBooleanMemberOrDefault("require_api_required_arguments", false));
   }
 
   /** Validates an exact Python identifier used in configuration. */
@@ -89,6 +100,22 @@ record PythonSettings(
       throw new IllegalArgumentException("invalid Python identifier: " + value);
     }
     return value;
+  }
+
+  /**
+   * Describes explicitly enabled departures from Smithy's client compatibility guidance.
+   *
+   * @return build diagnostics to show in both Smithy Build and the Python CLI
+   */
+  List<String> warnings() {
+    var result = new ArrayList<String>();
+    if (requireApiRequiredArguments) {
+      result.add(
+          "require_api_required_arguments is enabled: API-required input typing can reject "
+              + "calls accepted by an evolved API. Explicit None omits query/header values at runtime; "
+              + "@clientOptional remains optional.");
+    }
+    return result;
   }
 
   /** Validates an importable absolute Python module. */

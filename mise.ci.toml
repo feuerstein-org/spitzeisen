@@ -25,7 +25,7 @@ run = "uv run python build_sync.py --check"
 
 [tasks.check-codegen-ci]
 description = "Fail if the generated example SDK is stale (CI only)"
-run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
+run = "uv run spitzeisen-gen check --path examples/spec/vendor.json --overlay examples/spec/weather.smithy --python-settings examples/spec/python.json --package weather_sdk --client-name WeatherApi --vendor openweathermap --output-path examples/weather_sdk"
 
 [tasks.check-codegen-frontend-ci]
 description = "Build the Java frontend and fail if its bundled JAR is stale (CI only)"

@@ -6,11 +6,11 @@ use smithy.api#http
 use smithy.api#httpLabel
 use smithy.api#httpPayload
 use spitzeisen.api#notFound
-use spitzeisen.protocols#genericRestJson
+use alloy#simpleRestJson
 use spitzeisen.python#operation
 
 /// A small service used to exercise Spitzeisen's Smithy-first pipeline.
-@genericRestJson
+@simpleRestJson
 service WeatherService {
     version: "1.0"
     operations: [GetWeather]

@@ -9,7 +9,6 @@ from spitzeisen import (
     SpitzeisenOperationSpec,
     SyncSpitzeisenApi,
     build_header_params,
-    coerce_choice,
     serialize_query_param,
 )
 from spitzeisen.params import QueryParams  # noqa: TC001 - retain runtime annotation introspection
@@ -35,23 +34,10 @@ class SyncCurrentWeatherApiBase(SyncSpitzeisenApi):
         units = self._validate_input(units, Literal["standard", "metric", "imperial"])
         language = self._validate_input(language, str | None)
         params: QueryParams = [
-            *serialize_query_param(
-                latitude, name="lat", style="form", explode=True, required=True, param_name="latitude"
-            ),
-            *serialize_query_param(
-                longitude, name="lon", style="form", explode=True, required=True, param_name="longitude"
-            ),
-            *serialize_query_param(
-                coerce_choice(units, Literal["standard", "metric", "imperial"], "units"),
-                name="units",
-                style="form",
-                explode=True,
-                required=False,
-                param_name="units",
-            ),
-            *serialize_query_param(
-                language, name="lang", style="form", explode=True, required=False, param_name="language"
-            ),
+            *serialize_query_param(latitude, name="lat"),
+            *serialize_query_param(longitude, name="lon"),
+            *serialize_query_param(units, name="units"),
+            *serialize_query_param(language, name="lang"),
         ]
         headers = build_header_params({})
         data = self._request_optional(
@@ -78,6 +64,10 @@ class SyncCurrentWeatherApiBase(SyncSpitzeisenApi):
         Returns the current weather observation for one latitude and longitude.
 
         Fetch and validate the response.
+
+        API-required argument typing is enabled. Pass None explicitly to omit a query or header
+        when using an evolved API; this may require a type-checker suppression.
+        Path labels always need a usable value.
 
         Example::
 
@@ -106,4 +96,4 @@ class SyncCurrentWeatherApiBase(SyncSpitzeisenApi):
         )
         if raw is None:
             return None
-        return CurrentWeatherResponse.model_validate(raw)
+        return self._validate_response(raw, CurrentWeatherResponse)

@@ -9,6 +9,7 @@ description = "Smithy Python client generator for Spitzeisen"
 
 val spitzeisenJavaVersion = rootProject.extra["spitzeisenJavaVersion"] as String
 val spitzeisenSmithyVersion = rootProject.extra["spitzeisenSmithyVersion"] as String
+val spitzeisenAlloyVersion = rootProject.extra["spitzeisenAlloyVersion"] as String
 
 java {
     toolchain {
@@ -17,10 +18,14 @@ java {
 }
 
 dependencies {
+    implementation(platform("software.amazon.smithy:smithy-bom:$spitzeisenSmithyVersion"))
     implementation("software.amazon.smithy:smithy-model:$spitzeisenSmithyVersion")
     implementation("software.amazon.smithy:smithy-build:$spitzeisenSmithyVersion")
     implementation("software.amazon.smithy:smithy-codegen-core:$spitzeisenSmithyVersion")
     implementation("software.amazon.smithy:smithy-jsonschema:$spitzeisenSmithyVersion")
+    implementation("com.disneystreaming.alloy:alloy-core:$spitzeisenAlloyVersion")
+
+    testImplementation("com.disneystreaming.alloy:alloy-protocol-tests:$spitzeisenAlloyVersion")
 
     testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.jupiter)

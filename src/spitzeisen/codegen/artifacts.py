@@ -20,5 +20,5 @@ class ArtifactManifest(BaseModel):
     models: list[ModelArtifact]
     model_names: dict[str, str]
     model_aliases: dict[str, str]
-    model_paths: list[str]
     dependencies: list[str]
+    warnings: list[str]

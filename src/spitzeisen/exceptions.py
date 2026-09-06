@@ -15,6 +15,8 @@ A client library that wants its own vocabulary should alias rather than subclass
     from spitzeisen.exceptions import SpitzeisenError as MyApiError
 """
 
+from collections.abc import Mapping
+
 HTTP_TOO_MANY_REQUESTS = 429
 HTTP_NOT_FOUND = 404
 HTTP_UNAUTHORIZED = 401
@@ -28,13 +30,22 @@ class SpitzeisenError(Exception):
 
 class HTTPError(SpitzeisenError):
     """
-    Raised for an HTTP error response. Carries the HTTP `status` and the server-supplied `message`.
+    Raised for an HTTP error response, preserving `status`, `message`, raw `body` bytes, and `headers`.
     """
 
-    def __init__(self, status: int, message: str = "") -> None:
-        """Record the HTTP status and server-supplied message."""
+    def __init__(
+        self,
+        status: int,
+        message: str = "",
+        *,
+        body: bytes = b"",
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        """Preserve status, message, and original response data, including non-JSON failures."""
         self.status = status
         self.message = message
+        self.body = body
+        self.headers = dict(headers or {})
         detail = f": {message}" if message else ""
         super().__init__(f"Request failed with status {status}{detail}")
 
@@ -78,12 +89,18 @@ class MaxRetriesExceededError(SpitzeisenError):
         super().__init__(f"Maximum retries ({retries}) exceeded after repeated {status} responses")
 
 
-def http_error_from_status(status: int, message: str = "") -> HTTPError:
+def http_error_from_status(
+    status: int,
+    message: str = "",
+    *,
+    body: bytes = b"",
+    headers: Mapping[str, str] | None = None,
+) -> HTTPError:
     """Map an HTTP status onto the most specific `HTTPError` subclass."""
     if status in (HTTP_UNAUTHORIZED, HTTP_FORBIDDEN):
-        return AuthenticationError(status, message)
+        return AuthenticationError(status, message, body=body, headers=headers)
     if status == HTTP_NOT_FOUND:
-        return NotFoundError(status, message)
+        return NotFoundError(status, message, body=body, headers=headers)
     if status >= HTTP_SERVER_ERROR_MIN:
-        return ServerError(status, message)
-    return HTTPError(status, message)
+        return ServerError(status, message, body=body, headers=headers)
+    return HTTPError(status, message, body=body, headers=headers)

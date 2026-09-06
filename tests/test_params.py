@@ -229,6 +229,13 @@ def test_serialize_path_param_distinguishes_greedy_and_non_greedy_labels() -> No
     assert serialize_path_param(value, greedy=True) == "folders/2026%20report%23final"
 
 
+@pytest.mark.parametrize("value", [None, ""])
+def test_path_labels_require_nonempty_values(value: object) -> None:
+    """Missing labels cannot form a request URI, even when input validation is disabled."""
+    with pytest.raises(ValueError, match="path labels"):
+        serialize_path_param(value)
+
+
 def test_build_header_params_keeps_header_values_scalar() -> None:
     """Headers continue to use a simple name/value mapping, unlike query strings."""
     assert build_header_params({"X-Active": True, "absent": None}) == {"X-Active": "true"}

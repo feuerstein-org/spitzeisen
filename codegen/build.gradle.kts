@@ -6,6 +6,7 @@ val toolchainProperties = Properties().apply {
 
 extra["spitzeisenJavaVersion"] = toolchainProperties.getProperty("java.version")
 extra["spitzeisenSmithyVersion"] = toolchainProperties.getProperty("smithy.version")
+extra["spitzeisenAlloyVersion"] = toolchainProperties.getProperty("alloy.version")
 
 allprojects {
     group = "org.feuerstein.spitzeisen"

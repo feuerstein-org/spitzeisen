@@ -2,6 +2,8 @@
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :spitzeisen-smithy-codegen:dependencies --write-locks
+com.disneystreaming.alloy:alloy-core:0.3.40=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
+com.disneystreaming.alloy:alloy-protocol-tests:0.3.40=testCompileClasspath,testRuntimeClasspath
 com.google.code.findbugs:jsr305:3.0.2=checkstyle
 com.google.errorprone:error_prone_annotations:2.47.0=checkstyle
 com.google.guava:failureaccess:1.0.3=checkstyle
@@ -29,12 +31,18 @@ org.opentest4j:opentest4j:1.3.0=testCompileClasspath,testRuntimeClasspath
 org.reflections:reflections:0.10.2=checkstyle
 org.slf4j:slf4j-simple:2.0.18=checkstyle
 org.xmlresolver:xmlresolver:5.3.3=checkstyle
+software.amazon.smithy:smithy-aws-protocol-tests:1.73.0=testCompileClasspath,testRuntimeClasspath
+software.amazon.smithy:smithy-aws-traits:1.73.0=testCompileClasspath,testRuntimeClasspath
+software.amazon.smithy:smithy-bom:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
 software.amazon.smithy:smithy-build:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
-software.amazon.smithy:smithy-cli:1.73.0=smithyCli
+software.amazon.smithy:smithy-cli:1.73.0=smithyCli,testRuntimeClasspath
 software.amazon.smithy:smithy-codegen-core:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
-software.amazon.smithy:smithy-diff:1.73.0=smithyCli
+software.amazon.smithy:smithy-diff:1.73.0=smithyCli,testCompileClasspath,testRuntimeClasspath
 software.amazon.smithy:smithy-jsonschema:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
 software.amazon.smithy:smithy-model:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
-software.amazon.smithy:smithy-syntax:1.73.0=smithyCli
+software.amazon.smithy:smithy-protocol-test-traits:1.73.0=testCompileClasspath,testRuntimeClasspath
+software.amazon.smithy:smithy-protocol-traits:1.73.0=testCompileClasspath,testRuntimeClasspath
+software.amazon.smithy:smithy-syntax:1.73.0=smithyCli,testRuntimeClasspath
 software.amazon.smithy:smithy-utils:1.73.0=compileClasspath,runtimeClasspath,smithyCli,testCompileClasspath,testRuntimeClasspath
+software.amazon.smithy:smithy-validation-model:1.73.0=testCompileClasspath,testRuntimeClasspath
 empty=annotationProcessor,smithyBuild,testAnnotationProcessor,testSmithyBuild

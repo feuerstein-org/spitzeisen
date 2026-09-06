@@ -4,7 +4,7 @@ This directory is a miniature downstream SDK repository. It keeps vendor inputs,
 extension points, and committed generated output separate in the same way a real package would.
 The vendor input transcribes OpenWeather's official
 [Current Weather documentation](https://openweathermap.org/api/current?collection=current_forecast)
-into OpenAPI 3.1 because the source page itself is HTML.
+into OpenAPI 3.0.3 because the source page itself is HTML.
 
 ```text
 spec/vendor.json                 OpenAPI transcription of the official request and response
@@ -29,10 +29,10 @@ mise run check-codegen
 mise run demo-example
 ```
 
-`codegen` projects the compatible OpenAPI 3.1 document to 3.0, imports it with pinned
+`codegen` imports the OpenAPI 3.0.3 document with pinned
 `smithy-translate`, assembles `weather.smithy` with the converted model using the official Smithy
 CLI, runs the direct `spitzeisen-python-client-codegen` generator in Java, generates Pydantic
-models from the original schema, and writes both operation surfaces in
+models from the assembled Smithy model, and writes both operation surfaces in
 one transaction. No intermediate is kept as a second source of truth. Run `mise run import-openapi`
 to write the assembled Smithy JSON under `spec/generated/` when it is useful to inspect.
 

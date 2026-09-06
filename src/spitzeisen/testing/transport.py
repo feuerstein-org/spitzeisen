@@ -29,6 +29,7 @@ class RecordedRequest:
     path: str
     params: dict[str, str | list[str]]
     headers: Mapping[str, str]
+    body: bytes = b""
 
 
 class FakeRouter:
@@ -53,6 +54,7 @@ class FakeRouter:
         headers: Mapping[str, str] | None = None,
         repeat: int = 1,
         error: Exception | None = None,
+        content: bytes | str | None = None,
     ) -> FakeRouter:
         """
         Queue `repeat` responses (or raised errors) for `path`.
@@ -60,10 +62,19 @@ class FakeRouter:
         Chain calls to script a sequence. Pass `error=httpx2.ConnectError(...)` to simulate a
         transport fault. Returns self.
         """
+        if content is not None and json is not None:
+            msg = "Specify either json or content for a scripted response"
+            raise ValueError(msg)
         queue = self._routes.setdefault(path, deque())
         for _ in range(repeat):
             queue.append(
-                error if error is not None else httpx2.Response(status, json=json, headers=dict(headers or {})),
+                error
+                if error is not None
+                else (
+                    httpx2.Response(status, content=content, headers=dict(headers or {}))
+                    if content is not None
+                    else httpx2.Response(status, json=json, headers=dict(headers or {}))
+                ),
             )
         return self
 
@@ -96,6 +107,7 @@ class FakeRouter:
                 path,
                 _recorded_params(request.url.params.multi_items()),
                 request.headers,
+                request.content,
             ),
         )
         queue = self._routes.get(path)

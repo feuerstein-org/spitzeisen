@@ -97,7 +97,8 @@ enum SortingEncoding {
     SUFFIX = "suffix"
 }
 
-/// Query collection serialization for generic HTTP protocols.
+/// Legacy query encoding, rejected by the Alloy Python target. Model the wire String and use inputAdapter.
+@deprecated(message: "Use Alloy list bindings for repeated values, or String plus inputAdapter for vendor encodings.")
 @trait(selector: "structure > member")
 structure queryEncoding {
     @required

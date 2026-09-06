@@ -14,6 +14,7 @@ from spitzeisen.codegen.artifacts import ArtifactManifest
 from spitzeisen.codegen.assembly import SMITHY_CLI_COORDINATE, SMITHY_CLI_VERSION
 from spitzeisen.codegen.exceptions import CodegenError
 from spitzeisen.codegen.generate import GeneratedModule
+from spitzeisen.codegen.toolchain import ALLOY_CORE_COORDINATE
 
 SMITHY_JSONSCHEMA_COORDINATE = f"software.amazon.smithy:smithy-jsonschema:{SMITHY_CLI_VERSION}"
 SMITHY_CODEGEN_CORE_COORDINATE = f"software.amazon.smithy:smithy-codegen-core:{SMITHY_CLI_VERSION}"
@@ -124,6 +125,7 @@ def smithy_build_command(plugin_jar: Path = PLUGIN_JAR) -> list[str]:
         SMITHY_CLI_COORDINATE,
         SMITHY_JSONSCHEMA_COORDINATE,
         SMITHY_CODEGEN_CORE_COORDINATE,
+        ALLOY_CORE_COORDINATE,
         "--extra-jars",
         str(plugin_jar),
         "--",
