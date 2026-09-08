@@ -27,16 +27,16 @@ class SyncSpitzeisenConfig(BaseModel):
         auth: How credentials are applied to each request. Defaults to none.
         max_retries: Retries for retryable statuses and transport failures, with exponential
             backoff. 0 disables retrying.
-        request_timeout: Per-request timeout in seconds, a caller-supplied session keeps its own.
+        request_timeout: Per-request timeout in seconds, applied to owned and caller-supplied HTTP clients.
         retry_backoff_base: Multiplier for the exponential backoff. Set to 0 to retry immediately.
         retry_backoff_floor: Lower bound time between retries in seconds.
         on_validation_error: Default behaviour of validated list methods. "raise" propagates
-            `pydantic.ValidationError` on the first bad record; "skip" drops and logs them.
-        strict_inputs: Validate non-None generated method arguments with Pydantic strict mode before
+            `pydantic.ValidationError` with all invalid record indices; "skip" drops and logs them.
+        strict_inputs: Validate non-None arguments passed to ``validate_input`` with Pydantic strict mode before
             serialization. Off by default so Python-compatible values retain the permissive SDK
             behavior; enable it when boundary validation is more important than coercion.
         strict_response_validation: Enforce modeled response constraints and known enum values.
-            Off by default for API compatibility. Applies to nested generated models too;
+            Off by default for API compatibility. Applies to nested models using ``response_constraints`` too;
             does not change parsing, member optionality, or raw response methods.
         http_client: The httpx2 client for this surface. Supply one when custom transport
             behaviour is required; otherwise Spitzeisen creates and owns it lazily.

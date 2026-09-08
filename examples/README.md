@@ -1,61 +1,52 @@
-# Generated weather SDK example
+# Handwritten SDK example
 
-This directory is a miniature downstream SDK repository. It keeps vendor inputs, handwritten
-extension points, and committed generated output separate in the same way a real package would.
-The vendor input transcribes OpenWeather's official
-[Current Weather documentation](https://openweathermap.org/api/current?collection=current_forecast)
-into OpenAPI 3.0.3 because the source page itself is HTML.
+`handwritten_sdk` demonstrates the target shape for a thin vendor SDK. It follows a small subset
+of the local `massive-api` reference and split endpoints. It is an example adapter, not a migration
+or replacement of that package, and intentionally does not reproduce every field or filter.
 
 ```text
-spec/vendor.json                 OpenAPI transcription of the official request and response
-spec/weather.smithy              reviewed Smithy trait overlay
-spec/native-weather.smithy       standalone Smithy-first model used by the SDK integration tests
-weather_sdk/models/_generated.py regenerated schema-derived models
-weather_sdk/models/_exports.py   regenerated public schema export map
-weather_sdk/_exports.py          regenerated root client/model exports
-weather_sdk/__init__.py          create-once customizable facade
-weather_sdk/models/current_weather_response.py create-once public model with a custom validator
-weather_sdk/*/_generated/*.py    regenerated operation and aggregate-client bases
-weather_sdk/_async/*.py          create-once public async extension classes
-weather_sdk/_sync/*.py           create-once public sync extension classes
-demo.py                          offline end-to-end usage through FakeRouter
+handwritten_sdk/__init__.py  vendor base URL and typed endpoint-group properties
+handwritten_sdk/reference.py paths, filter defaults, raw/typed lists, optional overview
+handwritten_sdk/splits.py    date bounds, comma-separated filters, compound sort
+handwritten_sdk/models.py    response fields, nested aliases, custom validation
+handwritten_sdk/params.py    vendor-specific Literal value sets
+demo.py                     offline request and cursor walk through FakeRouter
 ```
 
-From the repository root:
+From the repository root, run `mise run demo-example` or `uv run python examples/demo.py`.
+The demo uses scripted HTTP responses and an example key; no account or network connection is needed.
 
-```bash
-mise run codegen
-mise run check-codegen
-mise run demo-example
+```python
+from handwritten_sdk import AsyncMarketDataApi, AsyncMarketDataConfig
+from spitzeisen import BearerHeader
+
+config = AsyncMarketDataConfig(auth=BearerHeader("your-key"))
+async with AsyncMarketDataApi(config) as api:
+    tickers = await api.reference_api.get_all_tickers(market="stocks", max_results=100)
+    raw = await api.reference_api.get_all_tickers_raw(active=False)
+    overview = await api.reference_api.get_ticker_overview("AAPL")
 ```
 
-`codegen` imports the OpenAPI 3.0.3 document with pinned
-`smithy-translate`, assembles `weather.smithy` with the converted model using the official Smithy
-CLI, runs the direct `spitzeisen-python-client-codegen` generator in Java, generates Pydantic
-models from the assembled Smithy model, and writes both operation surfaces in
-one transaction. No intermediate is kept as a second source of truth. Run `mise run import-openapi`
-to write the assembled Smithy JSON under `spec/generated/` when it is useful to inspect.
+Each endpoint group subclasses `AsyncSpitzeisenApi`. The root's `api(...)` helper caches the group
+and shares its configuration, so HTTP session ownership, authentication, rate limiting, retry policy,
+and validation policy are configured once. Closing an owning root context closes its shared session.
 
-Files named or nested under `_generated`, plus `_exports.py` facades, are replaced on every run. The root package facade and
-public model, operation, and client modules are created only when absent, so adding custom SDK
-exports or behaviour there is safe. Starting with no `weather_sdk` directory recreates the entire
-importable package, including `weather_sdk/__init__.py`. After that initial scaffold,
-`models/current_weather_response.py` demonstrates customization with a validator requiring a
-successful observation to contain at least one weather condition. The check task verifies generated
-models, replaceable operation/client bases, public exports, and the presence of every public
-extension module.
+The SDK chooses the URL paths, parameter names and defaults, endpoint page limits, envelope keys,
+and response models. For example, the reference endpoint uses separate `sort`/`order` parameters;
+the split endpoint uses `sort=execution_date.desc` and `adjustment_type.any_of=forward_split,reverse_split`.
+Spitzeisen's helpers validate and serialize these choices, then walk pages and validate records.
+No private runtime method, HTTP request implementation, or generated source is needed in the SDK.
 
-Generated schema classes inherit `SpitzeisenModel`: shared model policy stays centralized, aliases
-remain wire-only, and unknown response members are ignored for forward compatibility.
-Every type in the public response graph is re-exported through `weather_sdk.models`, so callers can
-write annotations such as `from weather_sdk.models import Wind` without importing private storage.
-Root response names resolve to their user-owned subclasses; nested schema names resolve to the
-exact generated classes used inside those responses.
+The reference list shows a raw method followed by `validate_records(...)`; splits uses the combined
+`get_models(...)` helper. `max_results` caps raw records inspected, so skip validation can return fewer
+models. `get_ticker_overview(...)` explicitly opts into `None` for HTTP 404. Other HTTP errors, malformed
+envelopes, and invalid models propagate. Unknown response fields are ignored by `SpitzeisenModel`, while
+the handwritten nonblank-ticker validator and nested address alias stay with the vendor models.
 
-The operation requires `lat`, `lon`, and the `appid` security credential, and optionally accepts
-`units`, `lang`, or a non-JSON `mode`. Standard and Spitzeisen traits in `weather.smithy` expose the
-coordinates as `latitude` and `longitude`, rename `lang` to `language`, default `units`, and exclude
-`mode` because Spitzeisen consumes JSON. The imported Smithy auth trait keeps `appid` out of the
-method while `QueryParamAuth` supplies it at runtime. This is the same division a production SDK
-would use: the assembled Smithy model describes both wire bindings and SDK presentation, while
-runtime config owns credentials.
+`CursorPagination` extracts only the configured cursor from `next_url`, sends it to the original
+operation URL, and lets the shared auth strategy add credentials again. It does not fetch arbitrary
+hosts or reuse credentials from a service-provided continuation URL.
+
+This example publishes only async operations. A handwritten blocking SDK can use `SyncSpitzeisenApi`
+and `SyncSpitzeisenConfig` with the same models, descriptors, and parameter helpers; generation is not
+required to use either surface. The archived Smithy direction is documented in the repository docs.

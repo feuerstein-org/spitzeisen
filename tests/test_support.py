@@ -224,7 +224,7 @@ class Records(AsyncSpitzeisenApi):
 
     async def list_records(self, *, active: bool = True) -> list[JsonObject]:
         """Return records, passing the filter down to the request path."""
-        return await self._get_all_pages(
+        return await self.get_records(
             RECORDS,
             params=serialize_query_param(str(active).lower(), name="active"),
         )

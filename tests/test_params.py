@@ -244,3 +244,20 @@ def test_build_header_params_keeps_header_values_scalar() -> None:
 def test_build_header_params_joins_collection_bindings() -> None:
     """Smithy header collection members serialize as one comma-separated HTTP field value."""
     assert build_header_params({"X-Values": ["one", "two"]}) == {"X-Values": "one,two"}
+
+
+@pytest.mark.parametrize(("cap", "expected"), [(None, 1000), (1, 1), (500, 500), (2000, 1000)])
+def test_resolve_page_size_respects_vendor_limit(cap: int | None, expected: int) -> None:
+    """SDK-owned page limits are independent of the total collection cap."""
+    from spitzeisen import resolve_page_size  # noqa: PLC0415
+
+    assert resolve_page_size(cap, 1000) == expected
+
+
+@pytest.mark.parametrize(("cap", "maximum"), [(0, 1000), (-1, 1000), (None, 0), (1, -1)])
+def test_resolve_page_size_rejects_invalid_limits(cap: int | None, maximum: int) -> None:
+    """Invalid limits fail before a handwritten SDK can issue a request."""
+    from spitzeisen import resolve_page_size  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="must be >= 1"):
+        resolve_page_size(cap, maximum)

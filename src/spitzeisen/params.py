@@ -86,7 +86,7 @@ def coerce_sort(sort: object, order: object, *, separator: str = ".") -> str:
     """
     Combine a field and direction into the `field.direction` wire form.
 
-    Both parts must be present. Allowed values are described by generated Literal annotations;
+    Both parts must be present. Allowed values are described by SDK-owned Literal annotations;
     runtime enum validation is optional and belongs to the caller.
     """
     if sort is None or sort == "" or order is None or order == "":
@@ -120,12 +120,12 @@ def coerce_timestamp(
     timestamp_format: TimestampFormat,
     param_name: str,
 ) -> str | None:
-    """Serialize one timezone-aware datetime using an exact Smithy timestamp format."""
+    """Serialize one timezone-aware datetime using an explicit timestamp format."""
     if value is None:
         return None
     value = _require_datetime(value, param_name)
     if value.utcoffset() is None:
-        msg = f"Invalid {param_name} {value!r}. Smithy timestamps must include a timezone."
+        msg = f"Invalid {param_name} {value!r}. Timestamps must include a timezone."
         raise ValueError(msg)
     utc_value = value.astimezone(UTC)
     if timestamp_format == "date-time":
@@ -138,7 +138,7 @@ def coerce_timestamp(
             delta.days * 24 * 60 * 60 + delta.seconds
         ) * _MILLISECONDS_PER_SECOND + delta.microseconds // _MICROSECONDS_PER_MILLISECOND
         return str(Decimal(milliseconds) / Decimal(_MILLISECONDS_PER_SECOND))
-    msg = f"Unsupported Smithy timestamp format {timestamp_format!r}."
+    msg = f"Unsupported timestamp format {timestamp_format!r}."
     raise ValueError(msg)
 
 
@@ -168,7 +168,7 @@ def _stringify(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, datetime):
-        msg = "datetime values require an explicit Smithy timestamp format"
+        msg = "datetime values require an explicit timestamp format"
         raise TypeError(msg)
     if isinstance(value, date):
         return value.isoformat()
@@ -183,7 +183,7 @@ def _values(value: object) -> list[str]:
 
 
 def serialize_path_param(value: object, *, greedy: bool = False) -> str:
-    """Serialize one Smithy HTTP label, preserving slashes only for greedy labels."""
+    """Serialize one HTTP path parameter, preserving slashes only for greedy labels."""
     if value is None or value == "":
         msg = "HTTP path labels must have a non-empty value."
         raise ValueError(msg)
@@ -200,7 +200,7 @@ def serialize_query_param(
     param_name: str | None = None,
 ) -> QueryParams:
     """
-    Serialize one Smithy-bound query member into the exact key/value pairs required by its protocol traits.
+    Serialize one query argument into the key/value pairs required by the API.
 
     Both, arrays and mappings are supported, if a required param is None, ValueError is raised.
 
@@ -214,7 +214,7 @@ def serialize_query_param(
         serialize_query_param(["AAPL", "MSFT"], name="symbol", explode=False)
         # [SerializedQueryParam("symbol", "AAPL,MSFT")]
 
-    You acn also pass a Mapping:
+    You can also pass a Mapping:
 
         serialize_query_param({"role": "admin", "active": True}, name="filter", explode=True)
         # [SerializedQueryParam("role", "admin"), SerializedQueryParam("active", "true")]
@@ -270,7 +270,7 @@ def serialize_query_map(
     *,
     reserved: Collection[str] = (),
 ) -> QueryParams:
-    """Serialize Smithy httpQueryParams, preserving lists and explicit query-binding precedence."""
+    """Serialize a query mapping, omitting None and preserving lists and reserved names."""
     if value is None:
         return []
     return [
@@ -304,3 +304,19 @@ def _serialize_object(
 def build_header_params(raw: Mapping[str, object]) -> dict[str, str]:
     """Build header values, where every param has exactly one name/value pair."""
     return {key: ",".join(_values(value)) for key, value in raw.items() if value is not None}
+
+
+def resolve_page_size(max_results: int | None, maximum: int) -> int:
+    """
+    Choose a request page size within the SDK's vendor limit and the total record cap.
+
+    The SDK owns the vendor maximum. ``None`` requests that full page size. Reject
+    nonpositive values before the first request, matching collection helper semantics.
+    """
+    if maximum < 1:
+        msg = f"maximum must be >= 1, got {maximum}"
+        raise ValueError(msg)
+    if max_results is not None and max_results < 1:
+        msg = f"max_results must be >= 1, got {max_results}"
+        raise ValueError(msg)
+    return maximum if max_results is None else min(max_results, maximum)

@@ -79,9 +79,9 @@ def test_existing_client_can_switch_response_checks(async_: bool) -> None:
         api.config.strict_response_validation = strict
         if strict:
             with pytest.raises(ValidationError, match="score"):
-                api._validate_response({"score": 100}, CheckedModel)
+                api.validate_response({"score": 100}, CheckedModel)
             with pytest.raises(ValidationError, match="score"):
-                api._validate_records([{"score": 100}], CheckedModel, "raise")
+                api.validate_records([{"score": 100}], CheckedModel, "raise")
         else:
-            assert api._validate_response({"score": 100}, CheckedModel).score == 100
-            assert api._validate_records([{"score": 100}], CheckedModel, "raise") == [CheckedModel(score=100)]
+            assert api.validate_response({"score": 100}, CheckedModel).score == 100
+            assert api.validate_records([{"score": 100}], CheckedModel, "raise") == [CheckedModel(score=100)]

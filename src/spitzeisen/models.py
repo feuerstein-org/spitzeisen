@@ -1,4 +1,4 @@
-"""Shared model policy for generated SDK response types."""
+"""Shared model policy for SDK response types."""
 
 from typing import Annotated, Any, cast
 
@@ -10,7 +10,7 @@ def response_constraints(*, choices: tuple[str | int, ...] | None = None, **cons
     """
     Compile optional response checks once, selected by each call's validation context.
 
-    Generated annotations keep ordinary Python types. Pydantic still parses them before
+    SDK annotations keep ordinary Python types. Pydantic still parses them before
     these checks run; only the modeled constraints and known enum values are optional.
     The same context reaches nested models and collection members without shared state.
     """
@@ -36,15 +36,12 @@ def response_constraints(*, choices: tuple[str | int, ...] | None = None, **cons
 
 class SpitzeisenModel(BaseModel):
     """
-    Base for generated response models.
+    Optional base for handwritten response models; plain Pydantic BaseModel works too.
 
-    Unknown response fields are deliberately ignored. Smithy clients must remain compatible
-    when a service adds an output member. Pydantic validates field types, nested structure,
-    and client-required members, using its normal parsing rules. Generated models accept
-    unknown enum values and skip length/range/pattern constraints unless validation context
-    contains ``strict_response_validation=True``. Clients supply this from runtime config;
-    direct callers can pass it to ``model_validate``. Neither policy invents missing
-    required values; only declared defaults are filled in.
+    Unknown response fields are ignored for compatibility with additive API changes.
+    Pydantic field types, defaults, aliases, constraints, and validators behave normally.
+    Fields explicitly annotated with ``response_constraints`` opt into contextual checks
+    selected by ``strict_response_validation``; ordinary Field constraints always apply.
     """
 
     model_config = ConfigDict(extra="ignore")

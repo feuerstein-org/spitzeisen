@@ -4,11 +4,14 @@ Pagination strategies.
 A strategy answers three questions about a decoded page: which records it carries (`records`), how
 to get the first page (`first_params`) and how to get the following pages (`next_params`).
 
-A few common default strategies are provided and can be selected with Smithy traits.
+A few common strategies are provided for handwritten endpoint definitions.
 You can create your own by implementing the PaginationStrategy Protocol.
 """
 
+import re
+from collections.abc import Collection
 from typing import Protocol, runtime_checkable
+from urllib.parse import parse_qs, urlsplit
 
 from spitzeisen.exceptions import ResponseShapeError
 from spitzeisen.params import QueryParams, SerializedQueryParam
@@ -190,10 +193,99 @@ class PageNumber:
         return _replace_query_param(params, self.page_param, str(int(current) + self.step))
 
 
+class CursorPagination:
+    """
+    Read the next cursor from a JSON response envelope.
+
+    By default, ``next_url`` carries a URL whose ``cursor`` query parameter selects the
+    next page. Only that parameter is read: the request keeps the operation's original
+    host and path, and credentials or other parameters from the URL are ignored.
+    Set ``cursor_from_url=False`` when ``next_key`` carries the token itself.
+
+    The first request preserves the supplied parameters. Later requests send the cursor
+    and only parameters named in ``retain_params``; filters are otherwise discarded.
+    Missing or null continuation means completion. Empty, malformed, or immediately
+    repeated cursors raise ``ResponseShapeError`` instead of returning incomplete data
+    or requesting the same page indefinitely. URL cursors are query-decoded exactly once;
+    direct tokens remain unchanged. Empty tokens are not supported.
+
+    Instances hold no per-walk state and may be shared by concurrent calls.
+    """
+
+    def __init__(
+        self,
+        cursor_param: str = "cursor",
+        next_key: str = "next_url",
+        results_key: str = "results",
+        *,
+        cursor_from_url: bool = True,
+        retain_params: Collection[str] = (),
+    ) -> None:
+        """Configure the envelope, cursor encoding, and parameters carried between pages."""
+        if not cursor_param or not next_key or not results_key:
+            msg = "cursor_param, next_key, and results_key must be non-empty"
+            raise ValueError(msg)
+        self.cursor_param = cursor_param
+        self.next_key = next_key
+        self.results_key = results_key
+        self.cursor_from_url = cursor_from_url
+        self.retain_params = frozenset(retain_params)
+
+    def first_params(self, params: QueryParams) -> QueryParams:
+        """Preserve the initial filters without changing the caller's list."""
+        return list(params)
+
+    def records(self, page: JsonValue) -> list[JsonObject]:
+        """Read records from the configured envelope member."""
+        return extract_records(page, self.results_key)
+
+    def next_params(
+        self,
+        page: JsonValue,
+        records: list[JsonObject],
+        params: QueryParams,
+        yielded: int,
+    ) -> QueryParams | None:
+        """Return a cursor request, or finish when the continuation is absent or null."""
+        if not isinstance(page, dict):
+            msg = f"expected an object carrying {self.next_key!r}, got {_describe(page)}"
+            raise ResponseShapeError(msg)
+        continuation = page.get(self.next_key)
+        if continuation is None:
+            return None
+        if not isinstance(continuation, str) or not continuation:
+            msg = f"expected a non-empty string under {self.next_key!r}"
+            raise ResponseShapeError(msg)
+        cursor = self._cursor_from_url(continuation) if self.cursor_from_url else continuation
+        if any(item.name == self.cursor_param and item.value == cursor for item in params):
+            msg = f"pagination repeated the current {self.cursor_param!r} cursor"
+            raise ResponseShapeError(msg)
+        return [
+            *(item for item in params if item.name in self.retain_params and item.name != self.cursor_param),
+            SerializedQueryParam(self.cursor_param, cursor),
+        ]
+
+    def _cursor_from_url(self, continuation: str) -> str:
+        """Decode one non-empty cursor while ignoring the URL's destination and other keys."""
+        try:
+            query = urlsplit(continuation).query
+        except ValueError as exc:
+            msg = f"malformed pagination URL under {self.next_key!r}"
+            raise ResponseShapeError(msg) from exc
+        if re.search(r"%(?![0-9A-Fa-f]{2})", query):
+            msg = f"invalid percent encoding in pagination URL under {self.next_key!r}"
+            raise ResponseShapeError(msg)
+        try:
+            tokens = parse_qs(query, keep_blank_values=True, errors="strict").get(self.cursor_param, [])
+        except UnicodeError as exc:
+            msg = f"malformed pagination URL under {self.next_key!r}"
+            raise ResponseShapeError(msg) from exc
+        if len(tokens) != 1 or not tokens[0]:
+            msg = f"expected exactly one non-empty {self.cursor_param!r} parameter in {self.next_key!r}"
+            raise ResponseShapeError(msg)
+        return tokens[0]
+
+
 def _replace_query_param(params: QueryParams, name: str, value: str) -> QueryParams:
     """Replace the pagination key without touching the caller-supplied params."""
     return [*(item for item in params if item.name != name), SerializedQueryParam(name, value)]
-
-
-# TODO: Add more useful and common strategies
-# Also document that new strategies requests are welcome.

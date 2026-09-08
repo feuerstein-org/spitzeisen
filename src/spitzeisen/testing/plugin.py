@@ -1,8 +1,8 @@
 """
 Pytest plugin.
 
-Registered as an entry point, so installing spitzeisen makes these fixtures available to any
-client library's test suite without a conftest import.
+Enable in an SDK test suite with ``pytest_plugins = ["spitzeisen.testing.plugin"]``
+in its root conftest.py. Pytest and pytest-mock are test dependencies, not runtime dependencies.
 """
 
 import pytest
