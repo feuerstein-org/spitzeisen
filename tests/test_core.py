@@ -22,12 +22,14 @@ from spitzeisen import (
     AsyncSpitzeisenConfig,
     AuthenticationError,
     BearerHeader,
+    CursorPagination,
     MaxRetriesExceededError,
     NoLimit,
     NoPagination,
     NotFoundError,
     PageNumber,
     QueryParamAuth,
+    ResponseShapeError,
     ServerError,
     SpitzeisenOperationSpec,
     SyncSpitzeisenApi,
@@ -114,7 +116,7 @@ class Driver:
 
     async def pages(self, spec: SpitzeisenOperationSpec, **kwargs: object) -> list[JsonObject]:
         """Collect all records for `spec`."""
-        return await self.call("_get_all_pages", spec, **kwargs)  # type: ignore[return-value]
+        return await self.call("get_records", spec, **kwargs)  # type: ignore[return-value]
 
 
 async def test_request_returns_decoded_body(surface: str) -> None:
@@ -122,7 +124,7 @@ async def test_request_returns_decoded_body(surface: str) -> None:
     driver = Driver(surface)
     driver.router.add("/v1/things", json={"results": [{"id": "a", "size": 1}]})
 
-    body = await driver.call("_request", THINGS)
+    body = await driver.call("get_json", THINGS)
 
     assert body == {"results": [{"id": "a", "size": 1}]}
 
@@ -245,7 +247,7 @@ async def test_auth_and_params_reach_the_wire(surface: str) -> None:
     driver.config.auth = BearerHeader("secret")
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", THINGS, params=serialize_query_param("3", name="size.gte"))
+    await driver.call("get_json", THINGS, params=serialize_query_param("3", name="size.gte"))
 
     recorded = driver.router.requests[0]
     assert recorded.headers["Authorization"] == "Bearer secret"
@@ -259,7 +261,7 @@ async def test_client_default_params_preserve_operation_values_and_rfc_encoding(
     driver.http_client.params = {"locale": "en GB", "q": "default"}
     driver.config.auth = QueryParamAuth("token", "secret")
     driver.router.add("/v1/things", json={"results": []})
-    await driver.call("_request", THINGS, params=serialize_query_param(["a b", "c+d"], name="q"))
+    await driver.call("get_json", THINGS, params=serialize_query_param(["a b", "c+d"], name="q"))
     sent = driver.router.requests[0]
     assert sent.params == {"locale": "en GB", "q": ["a b", "c+d"], "token": "secret"}
     assert "locale=en%20GB" in sent.url
@@ -272,7 +274,7 @@ async def test_query_param_auth(surface: str) -> None:
     driver.config.auth = QueryParamAuth("appid", "k")
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", THINGS)
+    await driver.call("get_json", THINGS)
 
     assert driver.router.requests[0].params == {"appid": "k"}
     assert "Authorization" not in driver.router.requests[0].headers
@@ -284,7 +286,7 @@ async def test_request_headers_reach_the_wire(surface: str) -> None:
     driver.router.add("/v1/things", json={"results": []})
 
     await driver.call(
-        "_request",
+        "get_json",
         THINGS,
         headers={"X-Workspace-ID": "workspace-1"},
     )
@@ -298,7 +300,7 @@ async def test_path_params_are_substituted(surface: str) -> None:
     driver = Driver(surface)
     driver.router.add("/v1/things/abc", json={"id": "abc"})
 
-    await driver.call("_request", ONE_THING, params=None, thing_id="abc")
+    await driver.call("get_json", ONE_THING, params=None, thing_id="abc")
 
     assert driver.router.requests[0].url == "https://fake.test/v1/things/abc"
 
@@ -354,7 +356,7 @@ async def test_query_values_are_encoded_by_httpx2(surface: str) -> None:
     driver.router.add("/v1/things", json={"results": []})
     params = serialize_query_param("https://example.test/a/b#details", name="url")
 
-    await driver.call("_request", THINGS, params=params)
+    await driver.call("get_json", THINGS, params=params)
 
     assert "url=https%3A%2F%2Fexample.test%2Fa%2Fb%23details" in driver.router.requests[0].url
     assert driver.router.requests[0].params["url"] == "https://example.test/a/b#details"
@@ -465,7 +467,7 @@ async def test_retries_then_succeeds(surface: str) -> None:
     driver.router.add("/v1/things", status=TOO_MANY_REQUESTS, json={"error": "slow down"})
     driver.router.add("/v1/things", json={"results": [{"id": "a"}]})
 
-    body = await driver.call("_request", THINGS)
+    body = await driver.call("get_json", THINGS)
 
     assert body == {"results": [{"id": "a"}]}
     assert len(driver.router.requests) == 2
@@ -477,7 +479,7 @@ async def test_persistent_429_raises_max_retries(surface: str) -> None:
     driver.router.add("/v1/things", status=TOO_MANY_REQUESTS, json={"error": "nope"}, repeat=2)
 
     with pytest.raises(MaxRetriesExceededError) as excinfo:
-        await driver.call("_request", THINGS)
+        await driver.call("get_json", THINGS)
 
     assert excinfo.value.retries == 1
 
@@ -488,7 +490,7 @@ async def test_persistent_5xx_raises_server_error(surface: str) -> None:
     driver.router.add("/v1/things", status=SERVER_ERROR, json={"message": "boom"}, repeat=2)
 
     with pytest.raises(ServerError) as excinfo:
-        await driver.call("_request", THINGS)
+        await driver.call("get_json", THINGS)
 
     assert excinfo.value.status == SERVER_ERROR
     assert excinfo.value.message == "boom"
@@ -500,7 +502,7 @@ async def test_auth_errors_are_not_retried(surface: str) -> None:
     driver.router.add("/v1/things", status=401, json={"error": "bad key"})
 
     with pytest.raises(AuthenticationError):
-        await driver.call("_request", THINGS)
+        await driver.call("get_json", THINGS)
 
     assert len(driver.router.requests) == 1
 
@@ -511,7 +513,7 @@ async def test_transport_failures_are_retried_then_raised(surface: str) -> None:
     driver.router.add("/v1/things", error=httpx2.ConnectError("connection reset"), repeat=2)
 
     with pytest.raises(TransportError):
-        await driver.call("_request", THINGS)
+        await driver.call("get_json", THINGS)
 
     assert len(driver.router.requests) == 2
 
@@ -521,7 +523,7 @@ async def test_request_optional_maps_404_to_none(surface: str) -> None:
     driver = Driver(surface)
     driver.router.add("/v1/things/gone", status=404, json={"error": "not found"})
 
-    assert await driver.call("_request_optional", ONE_THING, params=None, thing_id="gone") is None
+    assert await driver.call("get_json_optional", ONE_THING, params=None, thing_id="gone") is None
 
 
 async def test_optional_collection_maps_404_to_none_on_both_surfaces(surface: str) -> None:
@@ -529,7 +531,7 @@ async def test_optional_collection_maps_404_to_none_on_both_surfaces(surface: st
     driver = Driver(surface)
     driver.router.add("/v1/things", status=404, json={"error": "not found"})
 
-    assert await driver.call("_get_all_pages_optional", THINGS) is None
+    assert await driver.call("get_records_optional", THINGS) is None
 
 
 async def test_request_optional_propagates_other_errors(surface: str) -> None:
@@ -538,16 +540,16 @@ async def test_request_optional_propagates_other_errors(surface: str) -> None:
     driver.router.add("/v1/things/x", status=401, json={})
 
     with pytest.raises(AuthenticationError):
-        await driver.call("_request_optional", ONE_THING, params=None, thing_id="x")
+        await driver.call("get_json_optional", ONE_THING, params=None, thing_id="x")
 
 
 async def test_not_found_is_raised_by_plain_request(surface: str) -> None:
-    """`_request` keeps 404 as an error; only `_request_optional` softens it."""
+    """`get_json` keeps 404 as an error; only `get_json_optional` softens it."""
     driver = Driver(surface)
     driver.router.add("/v1/things/x", status=404, json={})
 
     with pytest.raises(NotFoundError):
-        await driver.call("_request", ONE_THING, params=None, thing_id="x")
+        await driver.call("get_json", ONE_THING, params=None, thing_id="x")
 
 
 async def test_validation_skips_bad_records(surface: str) -> None:
@@ -555,7 +557,7 @@ async def test_validation_skips_bad_records(surface: str) -> None:
     driver = Driver(surface)
     records: list[JsonObject] = [{"id": "a", "size": 1}, {"id": "b", "size": "huge"}]
 
-    things = driver.api._validate_records(records, Thing, "skip")
+    things = driver.api.validate_records(records, Thing, "skip")
 
     assert [thing.id for thing in things] == ["a"]
 
@@ -566,7 +568,7 @@ async def test_validation_raises_when_asked(surface: str) -> None:
     records: list[JsonObject] = [{"id": "a", "size": "huge"}]
 
     with pytest.raises(ValidationError):
-        driver.api._validate_records(records, Thing, "raise")
+        driver.api.validate_records(records, Thing, "raise")
 
 
 async def test_http_client_closes_after_last_holder_exits(surface: str) -> None:
@@ -634,7 +636,7 @@ async def test_an_unconfigured_client_does_not_limit(surface: str) -> None:
         cast("SyncThings", driver.api).config = config
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", THINGS)
+    await driver.call("get_json", THINGS)
 
     assert isinstance(config.limiter, NoLimit)
     assert len(driver.router.requests) == 1
@@ -723,6 +725,113 @@ async def test_a_plain_cost_reaches_the_limiter(surface: str) -> None:
     driver.config.limiter = limiter = RecordingLimiter()
     driver.router.add("/v1/things", json={"results": []})
 
-    await driver.call("_request", SpitzeisenOperationSpec(path="/v1/things", cost=3.0))
+    await driver.call("get_json", SpitzeisenOperationSpec(path="/v1/things", cost=3.0))
 
     assert limiter.costs == [3.0]
+
+
+async def test_typed_collection_caps_raw_rows_before_skip_validation(surface: str) -> None:
+    """Skipping bad rows does not trigger extra requests beyond the caller's raw cap."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things", json=[{"id": "a", "size": 1}, {"id": "bad"}, {"id": "c", "size": 3}])
+    assert await driver.call("get_models", THINGS, Thing, max_results=2) == [Thing(id="a", size=1)]
+    assert len(driver.router.requests) == 1
+
+
+async def test_typed_collection_per_call_mode_does_not_change_config(surface: str) -> None:
+    """A call can reject bad rows without changing a shared client's skip policy."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things", json=[{"id": "bad"}])
+    with pytest.raises(ValidationError):
+        await driver.call("get_models", THINGS, Thing, max_results=1, on_validation_error="raise")
+    assert driver.config.on_validation_error == "skip"
+    with pytest.raises(ValueError, match="Invalid validation mode"):
+        await driver.call("get_models", THINGS, Thing, on_validation_error="ignore")
+    assert len(driver.router.requests) == 1
+
+
+@pytest.mark.parametrize("result_key", [None, "result"])
+async def test_typed_single_response_uses_optional_envelope(surface: str, result_key: str | None) -> None:
+    """Single-object helpers parse whole bodies and SDK-selected envelope keys."""
+    driver = Driver(surface)
+    payload = {"id": "a", "size": "2"}
+    driver.router.add("/v1/things/a", json=payload if result_key is None else {result_key: payload})
+    assert await driver.call("get_model", ONE_THING, Thing, result_key=result_key, thing_id="a") == Thing(
+        id="a", size=2
+    )
+
+
+@pytest.mark.parametrize("payload", [{}, {"result": None}, {"result": []}])
+async def test_optional_model_does_not_hide_bad_envelopes(surface: str, payload: dict[str, object]) -> None:
+    """Optional lookup semantics apply to HTTP 404, not malformed successful responses."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things/a", json=payload)
+    with pytest.raises(ResponseShapeError):
+        await driver.call("get_model", ONE_THING, Thing, result_key="result", not_found_ok=True, thing_id="a")
+
+
+@pytest.mark.parametrize("not_found_ok", [False, True])
+async def test_typed_lookup_requires_explicit_not_found_policy(surface: str, not_found_ok: bool) -> None:
+    """An SDK selects 404-as-None per operation instead of weakening the whole transport."""
+    driver = Driver(surface)
+    driver.router.add("/v1/things/gone", status=404)
+    with nullcontext() if not_found_ok else pytest.raises(NotFoundError):
+        assert await driver.call("get_model", ONE_THING, Thing, not_found_ok=not_found_ok, thing_id="gone") is None
+
+
+async def test_api_groups_are_cached_by_class_and_share_lifecycle(surface: str) -> None:
+    """Cached groups use one config, including when independently entered inside the root."""
+    driver = Driver(surface)
+    if isinstance(driver.api, AsyncSpitzeisenApi):
+        child = driver.api.api(AsyncThings)
+        assert child is driver.api.api(AsyncThings)
+        assert child.config is driver.config
+        async with driver.api:
+            async with child:
+                assert not driver.http_client.is_closed
+            assert not driver.http_client.is_closed
+    else:
+        sync_child = driver.api.api(SyncThings)
+        assert sync_child is driver.api.api(SyncThings)
+        assert sync_child.config is driver.config
+        with driver.api:
+            with sync_child:
+                assert not driver.http_client.is_closed
+            assert not driver.http_client.is_closed
+    assert driver.http_client.is_closed
+    assert driver.config.http_client is None
+    # Re-entering now leaves lazy creation possible rather than reusing a closed client.
+    assert not driver.config.owns_http_client
+
+
+async def test_configured_query_auth_replaces_caller_credentials(surface: str) -> None:
+    """Every request carries exactly the configured credential even when query params conflict."""
+    driver = Driver(surface)
+    driver.config.auth = QueryParamAuth("token", "configured")
+    driver.router.add("/v1/things", json=[])
+    await driver.call("get_json", THINGS, params=serialize_query_param(["wrong", "also-wrong"], name="token"))
+    assert driver.router.requests[0].params == {"token": "configured"}
+
+
+@pytest.mark.parametrize("method", ["get_records", "get_records_optional"])
+async def test_pagination_detects_longer_cycles_per_walk(surface: str, method: str) -> None:
+    """Broken cursor cycles stop before paying for a repeated page, including optional lists."""
+    driver = Driver(surface)
+    spec = SpitzeisenOperationSpec("/v1/things", pagination=CursorPagination())
+    for token in ("one", "two", "one"):
+        driver.router.add("/v1/things", json={"results": [{"id": token}], "next_url": f"?cursor={token}"})
+    with pytest.raises(ResponseShapeError, match="repeated a previous request"):
+        await driver.call(method, spec)
+    assert len(driver.router.requests) == 3
+
+
+async def test_pagination_progress_does_not_leak_between_calls(surface: str) -> None:
+    """One shared operation spec can be called repeatedly with the same filters and cursors."""
+    driver = Driver(surface)
+    spec = SpitzeisenOperationSpec("/v1/things", pagination=CursorPagination())
+    for _ in range(2):
+        driver.router.add("/v1/things", json={"results": [], "next_url": "?cursor=next"})
+        driver.router.add("/v1/things", json={"results": [{"id": "a"}]})
+    assert await driver.pages(spec) == [{"id": "a"}]
+    assert await driver.pages(spec) == [{"id": "a"}]
+    assert len(driver.router.requests) == 4

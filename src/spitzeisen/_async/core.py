@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 from collections.abc import AsyncIterator, Callable, Mapping
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
 from urllib.parse import quote, urlencode
 
 import structlog
@@ -27,6 +27,7 @@ from spitzeisen.exceptions import (
     HTTPError,
     MaxRetriesExceededError,
     NotFoundError,
+    ResponseShapeError,
     TransportError,
     http_error_from_status,
 )
@@ -61,15 +62,28 @@ def _is_retryable(status: int) -> bool:
 
 class AsyncSpitzeisenApi:
     """
-    Base class for generated operation classes: one rate-limited, retrying, paginating request path.
+    Shared transport and typed response helpers for handwritten API clients.
 
     Subclasses describe *what* to call with a `SpitzeisenOperationSpec` and call the
-    underscore-prefixed helpers; they never touch the HTTP client or the limiter directly.
+    public request and collection helpers; they never touch the HTTP client or the limiter directly.
     """
 
     def __init__(self, config: AsyncSpitzeisenConfig) -> None:
         """Bind the shared configuration."""
         self.config = config
+        self._apis: dict[type[AsyncSpitzeisenApi], AsyncSpitzeisenApi] = {}
+
+    def api[ApiT: AsyncSpitzeisenApi](self, api_class: type[ApiT]) -> ApiT:
+        """
+        Return a cached API group sharing this client's config, connection, and limiter.
+
+        Groups need only inherit this class and accept its config in their constructor.
+        The root context owns the connection; accessing a group does not acquire another
+        holder. A group may also be used as an independent context manager.
+        """
+        if api_class not in self._apis:
+            self._apis[api_class] = api_class(self.config)
+        return cast("ApiT", self._apis[api_class])
 
     async def __aenter__(self) -> Self:
         """Register as a holder of the shared HTTP client; nothing is opened until first use."""
@@ -79,7 +93,13 @@ class AsyncSpitzeisenApi:
     async def __aexit__(self, *args: object) -> None:
         """Close the HTTP client, unless another holder is still using it or the caller owns it."""
         if self.config.release():
-            await self._http_client.aclose()
+            client = self.config.http_client
+            try:
+                await self._http_client.aclose()
+            finally:
+                if self.config.http_client is client:
+                    self.config.http_client = None
+                    self.config.owns_http_client = False
 
     @property
     def _http_client(self) -> AsyncClient:
@@ -94,7 +114,7 @@ class AsyncSpitzeisenApi:
             self.config.owns_http_client = True
         return self.config.http_client
 
-    async def _request(
+    async def get_json(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
@@ -151,6 +171,7 @@ class AsyncSpitzeisenApi:
         request_headers = dict(headers or {})
         auth_params: dict[str, str] = {}
         self.config.auth.apply(request_headers, auth_params)
+        request_params = [item for item in request_params if item.name not in auth_params]
         request_params.extend(SerializedQueryParam(name, value) for name, value in auth_params.items())
         httpx_params = URL(url).params.merge(HttpxQueryParams([(item.name, item.value) for item in request_params]))
 
@@ -166,7 +187,7 @@ class AsyncSpitzeisenApi:
                         timeout=self.config.request_timeout,
                         content=content,
                     )
-                    # Encode after HTTP client defaults are merged. Smithy uses %20 for spaces.
+                    # Encode after HTTP client defaults are merged, using %20 for spaces.
                     query = urlencode(request.url.params.multi_items(), quote_via=quote).encode("ascii")
                     request.url = request.url.copy_with(query=query or None)
                     response = await client.send(request)
@@ -208,7 +229,7 @@ class AsyncSpitzeisenApi:
         msg = "Unexpected end of retry loop"
         raise RuntimeError(msg)
 
-    async def _request_optional(
+    async def get_json_optional(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
@@ -216,13 +237,13 @@ class AsyncSpitzeisenApi:
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> JsonValue:
-        """Like `_request`, but return None when the resource does not exist (HTTP 404)."""
+        """Like `get_json`, but return None when the resource does not exist (HTTP 404)."""
         try:
-            return await self._request(operation_spec, params=params, headers=headers, **path_params)
+            return await self.get_json(operation_spec, params=params, headers=headers, **path_params)
         except NotFoundError:
             return None
 
-    async def _paginate(
+    async def iter_records(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
@@ -244,8 +265,10 @@ class AsyncSpitzeisenApi:
         # Get first page
         current = operation_spec.pagination.first_params(list(params or []))
         yielded = 0
+        seen: set[tuple[SerializedQueryParam, ...]] = set()
         while True:
-            page = await self._request(operation_spec, params=current, headers=headers, **path_params)
+            _check_page_progress(current, seen)
+            page = await self.get_json(operation_spec, params=current, headers=headers, **path_params)
             # Extract the actual content from the HTTP response and yield each individual record
             records = operation_spec.pagination.records(page)
             for record in records:
@@ -259,7 +282,7 @@ class AsyncSpitzeisenApi:
                 return
             current = list(next_params)
 
-    async def _get_all_pages(
+    async def get_records(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
@@ -271,7 +294,7 @@ class AsyncSpitzeisenApi:
         """Collect records across pages into a list of raw dicts, capped at `max_results`."""
         return [
             record
-            async for record in self._paginate(
+            async for record in self.iter_records(
                 operation_spec,
                 params=params,
                 max_results=max_results,
@@ -280,7 +303,7 @@ class AsyncSpitzeisenApi:
             )
         ]
 
-    async def _get_all_pages_optional(
+    async def get_records_optional(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
@@ -289,48 +312,113 @@ class AsyncSpitzeisenApi:
         headers: Mapping[str, str] | None = None,
         **path_params: object,
     ) -> list[JsonObject] | None:
-        """Collect pages like ``_get_all_pages``, mapping any HTTP 404 to None."""
-        if max_results is not None and max_results < 1:
-            msg = f"max_results must be >= 1, got {max_results}"
-            raise ValueError(msg)
+        """Collect pages like ``get_records``, mapping any HTTP 404 to None."""
+        try:
+            return await self.get_records(
+                operation_spec, params=params, max_results=max_results, headers=headers, **path_params
+            )
+        except NotFoundError:
+            return None
 
-        current = operation_spec.pagination.first_params(list(params or []))
-        records_seen: list[JsonObject] = []
-        while True:
-            page = await self._request_optional(
-                operation_spec,
-                params=current,
-                headers=headers,
-                **path_params,
-            )
-            if page is None:
+    async def get_models[ModelT: BaseModel](
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        model: type[ModelT],
+        *,
+        params: QueryParams | None = None,
+        max_results: int | None = None,
+        on_validation_error: ValidationMode | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: object,
+    ) -> list[ModelT]:
+        """
+        Collect a typed list, applying the record cap before raise/skip validation.
+
+        The cap counts raw records, so skipping invalid rows can return fewer models.
+        HTTP, decoding, and envelope errors always propagate; only Pydantic record
+        validation is governed by ``on_validation_error``.
+        """
+        mode = self._resolve_validation_mode(on_validation_error)
+        records = await self.get_records(
+            operation_spec, params=params, max_results=max_results, headers=headers, **path_params
+        )
+        return self.validate_records(records, model, mode)
+
+    @overload
+    async def get_model[ModelT: BaseModel](
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        model: type[ModelT],
+        *,
+        result_key: str | None = None,
+        not_found_ok: Literal[False] = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: object,
+    ) -> ModelT: ...
+
+    @overload
+    async def get_model[ModelT: BaseModel](
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        model: type[ModelT],
+        *,
+        result_key: str | None = None,
+        not_found_ok: bool = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: object,
+    ) -> ModelT | None: ...
+
+    async def get_model[ModelT: BaseModel](
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        model: type[ModelT],
+        *,
+        result_key: str | None = None,
+        not_found_ok: bool = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: object,
+    ) -> ModelT | None:
+        """
+        Parse one response object, optionally unwrapping a vendor envelope.
+
+        Only an HTTP 404 becomes None, and only with ``not_found_ok=True``. Missing or
+        null envelopes are shape errors; model validation failures always propagate.
+        Use a model's Pydantic aliases/validators for nested vendor-specific layouts.
+        """
+        try:
+            value = await self.get_json(operation_spec, params=params, headers=headers, **path_params)
+        except NotFoundError:
+            if not_found_ok:
                 return None
-            records = operation_spec.pagination.records(page)
-            remaining = None if max_results is None else max_results - len(records_seen)
-            records_seen.extend(records if remaining is None else records[:remaining])
-            if max_results is not None and len(records_seen) >= max_results:
-                return records_seen
-            next_params = operation_spec.pagination.next_params(
-                page,
-                records,
-                current,
-                len(records_seen),
-            )
-            if next_params is None:
-                return records_seen
-            current = list(next_params)
+            raise
+        if result_key is not None:
+            if not isinstance(value, dict) or result_key not in value:
+                msg = f"expected response envelope containing {result_key!r}"
+                raise ResponseShapeError(msg)
+            value = value[result_key]
+        if not isinstance(value, dict):
+            msg = "expected a response object"
+            raise ResponseShapeError(msg)
+        return self.validate_response(value, model)
 
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""
-        return override if override is not None else self.config.on_validation_error
+        mode = override if override is not None else self.config.on_validation_error
+        if mode not in {"raise", "skip"}:
+            msg = f"Invalid validation mode: {mode!r}"
+            raise ValueError(msg)
+        return mode
 
-    def _validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
+    def validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
         """Validate supplied values while preserving None as the wire-omission escape hatch."""
         if value is None or not self.config.strict_inputs:
             return value
         return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
 
-    def _validate_response[ModelT: BaseModel](self, value: JsonObject, model: type[ModelT]) -> ModelT:
+    def validate_response[ModelT: BaseModel](self, value: JsonObject, model: type[ModelT]) -> ModelT:
         """Parse one response using the client's optional constraint checks."""
         return model.model_validate(value, context=self._response_validation_context())
 
@@ -338,11 +426,11 @@ class AsyncSpitzeisenApi:
         """Snapshot the policy for one validation, including every nested value."""
         return {"strict_response_validation": self.config.strict_response_validation}
 
-    def _validate_records[ModelT: BaseModel](
+    def validate_records[ModelT: BaseModel](
         self,
         records: list[JsonObject],
         model: type[ModelT],
-        mode: ValidationMode,
+        mode: ValidationMode | None = None,
     ) -> list[ModelT]:
         """
         Validate raw records into `model` instances, validating the whole list at once.
@@ -351,6 +439,7 @@ class AsyncSpitzeisenApi:
         every bad row by index. With mode "skip", we first try the same path as for "raise" but
         on failure we rerun the validation this time with individual items and log the failing ones.
         """
+        mode = self._resolve_validation_mode(mode)
         adapter = _list_adapter(model)
         context = self._response_validation_context()
         if mode == "raise":
@@ -365,6 +454,15 @@ class AsyncSpitzeisenApi:
                 except ValidationError as exc:
                     logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
             return validated
+
+
+def _check_page_progress(params: QueryParams, seen: set[tuple[SerializedQueryParam, ...]]) -> None:
+    """Stop a broken pagination cycle before issuing a duplicate paid request."""
+    key = tuple(sorted(params, key=lambda item: item.name))
+    if key in seen:
+        msg = "pagination repeated a previous request"
+        raise ResponseShapeError(msg)
+    seen.add(key)
 
 
 def _decode_json(response: Response) -> JsonValue:

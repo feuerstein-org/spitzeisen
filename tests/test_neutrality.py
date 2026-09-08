@@ -1,13 +1,9 @@
-"""
-Neutrality guards.
-
-spitzeisen exists to serve any REST API, so two things are asserted here: that the generated
-weather client in `examples/` works end to end against the fake transport, and that no vendor or
-domain vocabulary has crept into the package.
-"""
+"""Exercise a handwritten vendor SDK and keep its domain vocabulary out of the runtime."""
 
 import re
 import sys
+from collections.abc import AsyncIterator
+from datetime import date
 from inspect import signature
 from pathlib import Path
 
@@ -15,191 +11,270 @@ import httpx2
 import pytest
 from pydantic import ValidationError
 
-from spitzeisen import AsyncSpitzeisenConfig, AuthenticationError, NoLimit, QueryParamAuth
+from spitzeisen import AuthenticationError, BearerHeader, JsonObject, ResponseShapeError
 from spitzeisen.testing import FakeRouter
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 
-from weather_sdk import AsyncWeatherApi
-from weather_sdk.models import CurrentWeatherResponse, Wind
+from handwritten_sdk import AsyncMarketDataApi, AsyncMarketDataConfig
+from handwritten_sdk.models import Ticker, TickerOverview
 
 SRC = Path(__file__).parent.parent / "src" / "spitzeisen"
-
-# Words that would mean the framework had learned about somebody's domain.
 FORBIDDEN = re.compile(
     r"\b(massive|eodhd|orats|polygon|ticker|dividend|equit(y|ies)|ohlcv|weather|forecast)s?\b",
     re.IGNORECASE,
 )
 
 
-def weather_payload() -> dict[str, object]:
-    """A response matching OpenWeather's official Current Weather example shape."""
-    return {
-        "coord": {"lon": 13.405, "lat": 52.52},
-        "weather": [{"id": 800, "main": "Clear", "description": "clear sky", "icon": "01d"}],
-        "base": "stations",
-        "main": {
-            "temp": 22.4,
-            "feels_like": 21.9,
-            "temp_min": 20.8,
-            "temp_max": 23.1,
-            "pressure": 1015,
-            "humidity": 64,
-            "sea_level": 1015,
-            "grnd_level": 1012,
-        },
-        "visibility": 10000,
-        "wind": {"speed": 3.1, "deg": 240, "gust": 5.2},
-        "clouds": {"all": 0},
-        "dt": 1787227200,
-        "sys": {
-            "type": 2,
-            "id": 2011538,
-            "country": "DE",
-            "sunrise": 1787197612,
-            "sunset": 1787249461,
-        },
-        "timezone": 7200,
-        "id": 2950159,
-        "name": "Berlin",
-        "cod": 200,
-    }
-
-
-def test_nested_weather_models_have_supported_public_imports() -> None:
-    """A type appearing in a public response graph can be named without a private import."""
-    weather = CurrentWeatherResponse.model_validate(weather_payload())
-
-    assert weather.wind is not None
-    assert isinstance(weather.wind, Wind)
-
-    def wind_speed(wind: Wind) -> float:
-        return wind.speed
-
-    assert wind_speed(weather.wind) == 3.1
+def ticker_payload(ticker: str = "AAPL") -> JsonObject:
+    """A representative subset of a vendor reference record."""
+    return {"ticker": ticker, "name": "Apple Inc.", "market": "stocks", "active": True}
 
 
 @pytest.fixture
-def weather_api() -> tuple[AsyncWeatherApi, FakeRouter]:
-    """The generated example client, wired to a scripted HTTP client."""
+async def market_api() -> AsyncIterator[tuple[AsyncMarketDataApi, FakeRouter]]:
+    """Use the real shared HTTP pipeline with a scripted transport and owned session."""
     router = FakeRouter()
-    config = AsyncSpitzeisenConfig(
-        base_url="https://api.openweathermap.org",
-        auth=QueryParamAuth("appid", "test-key"),
+    config = AsyncMarketDataConfig(
+        auth=BearerHeader("test-key"),
         http_client=httpx2.AsyncClient(transport=router.mock_transport()),
-        limiter=NoLimit(),
+        owns_http_client=True,
+        max_retries=0,
     )
-    return AsyncWeatherApi(config), router
+    async with AsyncMarketDataApi(config) as api:
+        yield api, router
 
 
-async def test_weather_client_returns_a_validated_response(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+async def test_handwritten_sdk_shares_cached_groups_and_session(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
 ) -> None:
-    """The real operation reaches generated nested models through the public client."""
-    api, router = weather_api
-    router.add("/data/2.5/weather", json=weather_payload())
+    """Groups reuse one configuration and leaving a nested context keeps the root usable."""
+    api, router = market_api
+    router.add("/v3/reference/tickers", json={"results": [ticker_payload()]})
+    client = api.config.http_client
+    assert client is not None
+    assert api.reference_api is api.reference_api
+    assert api.splits_api is api.splits_api
+    assert api.reference_api.config is api.splits_api.config is api.config
+    async with api.reference_api:
+        await api.reference_api.get_all_tickers()
+    assert not client.is_closed
+    await api.reference_api.get_all_tickers()
+    assert len(router.requests) == 2
 
-    weather = await api.current_weather_api.get_current_weather(
-        latitude=52.52,
-        longitude=13.405,
-        units="metric",
-        language="en",
+
+async def test_handwritten_list_owns_vendor_defaults(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """Default sorting, active flag, page size and shared auth reach the wire."""
+    api, router = market_api
+    router.add("/v3/reference/tickers", json={"results": [ticker_payload()]})
+
+    records = await api.reference_api.get_all_tickers()
+
+    assert isinstance(records[0], Ticker)
+    assert records[0].ticker == "AAPL"
+    assert router.requests[0].params == {"active": "true", "sort": "ticker", "order": "asc", "limit": "1000"}
+    assert router.requests[0].headers["authorization"] == "Bearer test-key"
+    assert "api_key" not in signature(api.reference_api.get_all_tickers).parameters
+
+
+async def test_handwritten_filters_keep_false_and_encode_vendor_names(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """Public argument names and dates map to the vendor's exact query bindings."""
+    api, router = market_api
+    router.add("/v3/reference/tickers", json={"results": []})
+
+    assert (
+        await api.reference_api.get_all_tickers_raw(
+            ticker_type="CS",
+            market="stocks",
+            active=False,
+            date=date(2026, 8, 31),
+            max_results=25,
+        )
+        == []
     )
 
-    assert weather is not None
-    assert weather.name == "Berlin"
-    assert weather.main.temp == 22.4
-    assert weather.weather[0].description == "clear sky"
     assert router.requests[0].params == {
-        "lat": "52.52",
-        "lon": "13.405",
-        "units": "metric",
-        "lang": "en",
-        "appid": "test-key",
+        "type": "CS",
+        "market": "stocks",
+        "active": "false",
+        "date": "2026-08-31",
+        "sort": "ticker",
+        "order": "asc",
+        "limit": "25",
     }
 
 
-async def test_weather_client_keeps_authentication_out_of_the_method_signature(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+async def test_handwritten_pagination_keeps_original_endpoint_and_reapplies_auth(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
 ) -> None:
-    """The OpenAPI security scheme keeps appid out because the shared auth strategy owns it."""
-    api, router = weather_api
-    router.add("/data/2.5/weather", json=weather_payload())
+    """Only the cursor from next_url reaches the configured endpoint, up to the total cap."""
+    api, router = market_api
+    router.add(
+        "/v3/reference/tickers",
+        json={
+            "results": [ticker_payload()],
+            "next_url": "https://other.example/wrong/path?cursor=second%2Bpage&apiKey=stale&market=fx",
+        },
+    ).add(
+        "/v3/reference/tickers",
+        json={
+            "results": [ticker_payload("MSFT"), ticker_payload("AMZN")],
+            "next_url": "https://api.massive.com/v3/reference/tickers?cursor=unused",
+        },
+    )
 
-    params = signature(api.current_weather_api.get_current_weather).parameters
-    assert "appid" not in params
-    assert "mode" not in params
-    assert {"latitude", "longitude", "units", "language"} <= params.keys()
+    records = await api.reference_api.get_all_tickers_raw(market="stocks", max_results=2)
 
-    await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
+    assert [record["ticker"] for record in records] == ["AAPL", "MSFT"]
+    assert len(router.requests) == 2
+    assert router.requests[1].params == {"cursor": "second+page"}
+    assert router.requests[1].url.startswith("https://api.massive.com/v3/reference/tickers?")
+    assert all(request.headers["authorization"] == "Bearer test-key" for request in router.requests)
 
-    assert router.requests[0].params["appid"] == "test-key"
 
-
-async def test_weather_client_can_enable_strict_keyword_input_validation(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+@pytest.mark.parametrize("value", [0, -1])
+async def test_handwritten_list_rejects_invalid_total_before_http(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+    value: int,
 ) -> None:
-    """Strict mode rejects coercible values before making an HTTP request."""
-    api, router = weather_api
-    api.config.strict_inputs = True
-
-    with pytest.raises(ValidationError, match="valid number"):
-        await api.current_weather_api.get_current_weather(
-            latitude="52.52",  # type: ignore[arg-type] - deliberately exercising runtime validation
-            longitude=13.405,
-        )
-
+    """The adapter's page-size helper enforces the shared positive-result-limit contract."""
+    api, router = market_api
+    with pytest.raises(ValueError, match="max_results must be >= 1"):
+        await api.reference_api.get_all_tickers(max_results=value)
     assert not router.requests
 
 
-async def test_weather_client_maps_the_real_unauthorized_response(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+async def test_handwritten_list_rejects_invalid_vendor_choice_before_http(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
 ) -> None:
-    """The spec's 401 response travels through the shared typed-error path."""
-    api, router = weather_api
-    router.add("/data/2.5/weather", status=401, json={"message": "Invalid API key"})
+    """The SDK supplies allowed values, and the shared helper validates them."""
+    api, router = market_api
+    with pytest.raises(ValueError, match="Invalid market"):
+        await api.reference_api.get_all_tickers(market="unknown")  # type: ignore[arg-type]
+    assert not router.requests
 
+
+async def test_handwritten_models_preserve_raw_data_and_apply_custom_validation(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """Raw calls preserve unknown fields; typed calls use the SDK validator and shared skip policy."""
+    api, router = market_api
+    valid = {**ticker_payload(), "new_vendor_field": "preserved"}
+    router.add("/v3/reference/tickers", json={"results": [valid, ticker_payload(" ")]})
+
+    raw = await api.reference_api.get_all_tickers_raw()
+    assert raw[0]["new_vendor_field"] == "preserved"
+    assert raw[1]["ticker"] == " "
+    records = await api.reference_api.get_all_tickers()
+    assert len(records) == 1
+    assert "new_vendor_field" not in records[0].model_dump()
+    with pytest.raises(ValidationError, match="ticker must not be blank"):
+        await api.reference_api.get_all_tickers(on_validation_error="raise")
+    assert api.config.on_validation_error == "skip"
+
+
+async def test_handwritten_overview_applies_nested_aliases_and_date_parsing(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """Single-model extraction honors handwritten Pydantic aliases and parsed dates."""
+    api, router = market_api
+    router.add(
+        "/v3/reference/tickers/BRK.B",
+        json={"results": {**ticker_payload("BRK.B"), "address": {"city": "Omaha"}, "list_date": "1980-03-17"}},
+    )
+
+    overview = await api.reference_api.get_ticker_overview("BRK.B", date="2026-08-31")
+
+    assert isinstance(overview, TickerOverview)
+    assert overview.city == "Omaha"
+    assert overview.list_date == date(1980, 3, 17)
+    assert router.requests[0].params == {"date": "2026-08-31"}
+
+
+async def test_handwritten_overview_quotes_path_labels(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """A label containing URL syntax remains one encoded path label."""
+    api, router = market_api
+    router.add("/v3/reference/tickers/A%2FB%3F", json={"results": ticker_payload("A/B?")})
+    overview = await api.reference_api.get_ticker_overview("A/B?")
+    assert overview is not None
+    assert overview.ticker == "A/B?"
+    assert router.requests[0].params == {}
+
+
+async def test_handwritten_overview_maps_only_not_found_to_none(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
+) -> None:
+    """An opted-in 404 is optional; authentication failures remain typed exceptions."""
+    api, router = market_api
+    router.add("/v3/reference/tickers/MISSING", status=404, json={"message": "Not found"})
+    router.add("/v3/reference/tickers/AAPL", status=401, json={"message": "Invalid API key"})
+
+    assert await api.reference_api.get_ticker_overview("MISSING") is None
     with pytest.raises(AuthenticationError, match="Invalid API key"):
-        await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
+        await api.reference_api.get_ticker_overview("AAPL")
 
 
-async def test_public_weather_model_runs_its_custom_validator(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+async def test_handwritten_overview_rejects_malformed_success(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
 ) -> None:
-    """The operation imports the preserved public subclass rather than the generated schema base."""
-    api, router = weather_api
-    payload = weather_payload()
-    payload["weather"] = []
-    router.add("/data/2.5/weather", json=payload)
+    """A missing envelope and a bad model must not masquerade as absent records."""
+    api, router = market_api
+    router.add("/v3/reference/tickers/AAPL", json={"status": "OK"}).add(
+        "/v3/reference/tickers/AAPL",
+        json={"results": ticker_payload("")},
+    )
+    with pytest.raises(ResponseShapeError):
+        await api.reference_api.get_ticker_overview("AAPL")
+    with pytest.raises(ValidationError, match="ticker must not be blank"):
+        await api.reference_api.get_ticker_overview("AAPL")
 
-    with pytest.raises(ValidationError, match="current weather must contain at least one weather condition"):
-        await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
 
-
-async def test_weather_sdk_accepts_relaxed_response_constraints(
-    weather_api: tuple[AsyncWeatherApi, FakeRouter],
+async def test_handwritten_splits_serialize_vendor_filter_conventions(
+    market_api: tuple[AsyncMarketDataApi, FakeRouter],
 ) -> None:
-    """The example opts into required input typing while keeping compatible response validation."""
-    api, router = weather_api
-    payload = weather_payload()
-    measurements = payload["main"]
-    assert isinstance(measurements, dict)
-    measurements["humidity"] = 101
-    router.add("/data/2.5/weather", json=payload)
+    """A second group composes the same runtime helpers for another endpoint's conventions."""
+    api, router = market_api
+    router.add(
+        "/stocks/v1/splits",
+        json={
+            "results": [
+                {
+                    "ticker": "AAPL",
+                    "execution_date": "2020-08-31",
+                    "adjustment_type": "forward_split",
+                    "split_from": 1,
+                    "split_to": 4,
+                }
+            ]
+        },
+    )
 
-    result = await api.current_weather_api.get_current_weather(latitude=52.52, longitude=13.405)
-    assert result is not None
-    assert result.main.humidity == 101
+    splits = await api.splits_api.get_splits(
+        ticker="AAPL",
+        execution_date_gte=date(2020, 1, 1),
+        adjustment_types=["forward_split", "reverse_split"],
+        max_results=6000,
+    )
+
+    assert splits[0].execution_date == date(2020, 8, 31)
+    assert splits[0].split_to == 4
+    assert router.requests[0].params == {
+        "ticker": "AAPL",
+        "execution_date.gte": "2020-01-01",
+        "sort": "execution_date.desc",
+        "adjustment_type.any_of": "forward_split,reverse_split",
+        "limit": "5000",
+    }
 
 
 @pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=lambda p: str(p.name))
 def test_no_domain_vocabulary_in_package(path: Path) -> None:
-    """
-    The framework must not name anybody's API or domain.
-
-    Docstrings included: an example mentioning tickers would be a sign the abstraction had
-    been shaped around one caller.
-    """
+    """Domain terms, including in runtime docstrings, belong only in downstream SDKs."""
     matches = FORBIDDEN.findall(path.read_text())
-
     assert not matches, f"{path.name} mentions {sorted(set(matches))}"

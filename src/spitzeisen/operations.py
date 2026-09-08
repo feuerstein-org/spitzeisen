@@ -1,10 +1,8 @@
 """
 The operation descriptor.
 
-`SpitzeisenOperationSpec` is the runtime half of the reviewed SDK overlay: details a
-mechanical service import does not infer (e.g. how much a call costs in rate-limit tokens).
-Generated operation modules declare one of these per operation, and the core reads it
-without needing to know anything else about the vendor API.
+Handwritten SDKs declare paths, per-request costs, HTTP methods, and pagination here.
+The core reads this descriptor without knowing the vendor's domain or response types.
 """
 
 from dataclasses import dataclass, field
@@ -24,8 +22,7 @@ class SpitzeisenOperationSpec:
         pagination: How to walk this operation's collection, and where its records sit in the
             envelope. Defaults to a single page.
         cost: What one call draws from the rate limiter.
-        method: HTTP method. Generated Alloy operations currently use GET; handwritten
-            operations may use another supported method.
+        method: HTTP method, defaulting to GET.
         retryable: Override whether a request can be retried. By default only idempotent
             methods are retried. Enable for POST only when repeating the operation is safe.
 
@@ -51,6 +48,6 @@ class SpitzeisenOperationSpec:
         )
 
     def url(self, base_url: str, **path_params: Any) -> str:
-        """Build the absolute URL, substituting any required path params."""
+        """Build the URL from already serialized path params (use ``serialize_path_param``)."""
         path = self.path.format(**path_params)
         return f"{base_url.rstrip('/')}/{path.lstrip('/')}"

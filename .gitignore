@@ -6,11 +6,8 @@
 .vscode
 .DS_Store
 coverage.xml
-examples/spec/generated/
-codegen/.gradle/
-codegen/build/
-codegen/**/build/
-codegen/**/bin/
 
 __pycache__/
 *.py[cod]
+
+/.worktrees/

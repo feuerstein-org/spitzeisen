@@ -19,8 +19,6 @@ jobs:
       - uses: jdx/mise-action@v4
         with:
           cache: true
-      - name: Build and verify the bundled Smithy frontend
-        run: mise run check-codegen-frontend-ci
       - run: |
           uv build
           uv publish
