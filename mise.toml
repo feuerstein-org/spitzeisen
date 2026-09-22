@@ -18,7 +18,7 @@ description = "Fail if _sync/ is stale relative to _async/"
 run = "uv run python build_sync.py --check"
 
 [tasks.demo-example]
-description = "Run the handwritten SDK example against an offline fake transport"
+description = "Run the weather API example against an offline fake transport"
 run = "uv run python examples/demo.py"
 
 [tasks.pre-commit]

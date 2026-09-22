@@ -1,12 +1,11 @@
 """
 The operation descriptor.
 
-Handwritten SDKs declare paths, per-request costs, HTTP methods, and pagination here.
+SDKs declare paths, per-request costs, HTTP methods, and pagination here.
 The core reads this descriptor without knowing the vendor's domain or response types.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 from spitzeisen.pagination import NoPagination, PaginationStrategy
 
@@ -47,7 +46,7 @@ class SpitzeisenOperationSpec:
             self.retryable if self.retryable is not None else self.method in {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
         )
 
-    def url(self, base_url: str, **path_params: Any) -> str:
+    def url(self, base_url: str, **path_params: str) -> str:
         """Build the URL from already serialized path params (use ``serialize_path_param``)."""
         path = self.path.format(**path_params)
         return f"{base_url.rstrip('/')}/{path.lstrip('/')}"

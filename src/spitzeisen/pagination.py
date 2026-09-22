@@ -4,7 +4,7 @@ Pagination strategies.
 A strategy answers three questions about a decoded page: which records it carries (`records`), how
 to get the first page (`first_params`) and how to get the following pages (`next_params`).
 
-A few common strategies are provided for handwritten endpoint definitions.
+A few common strategies are provided for endpoint definitions.
 You can create your own by implementing the PaginationStrategy Protocol.
 """
 
@@ -34,7 +34,7 @@ def _describe(value: JsonValue) -> str:
 
 
 def _ensure_record_objects(records: list[JsonValue], location: str) -> list[JsonObject]:
-    """Make sure records are objects and not arbitraty string, lists, integers etc."""
+    """Require each record to be a JSON object."""
     validated: list[JsonObject] = []
     for index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -46,9 +46,10 @@ def _ensure_record_objects(records: list[JsonValue], location: str) -> list[Json
 
 def extract_records(page: JsonValue, results_key: str | None) -> list[JsonObject]:
     """
-    Pull the record list out of a decoded page.
+    Extract records from an envelope when `results_key` is provided.
 
-    With `results_key` None the body *is* the list. Raises `ResponseShapeError` for anything else.
+    Otherwise `page` is a assumed to be a list of records.
+    A null envelope member means no records, other invalid shapes raise `ResponseShapeError`.
     """
     if results_key is None:
         if not isinstance(page, list):
@@ -62,7 +63,6 @@ def extract_records(page: JsonValue, results_key: str | None) -> list[JsonObject
         msg = f"expected {results_key!r} in the response envelope, got {_describe(page)}"
         raise ResponseShapeError(msg)
     records = page[results_key]
-    # An explicit null is the vendor saying "nothing matched"
     if records is None:
         return []
     if not isinstance(records, list):
@@ -95,60 +95,40 @@ class PaginationStrategy(Protocol):
         """Return the records carried by one decoded page, empty when it carries none."""
         ...
 
-    def next_params(
-        self,
-        page: JsonValue,
-        records: list[JsonObject],
-        params: QueryParams,
-        yielded: int,
-    ) -> QueryParams | None:
+    def next_params(self, page: JsonValue, records: list[JsonObject], params: QueryParams) -> QueryParams | None:
         """
-        Return the query params for the next page, or None when the walk is complete.
+        Return the next request's query params, or None to stop.
 
-        `records` is what `records(page)` returned, `page` is the envelope alongside it `params` are the
-        params that produced it, `yielded` is how many records have been emitted so far.
+        `records` are just the actual records extracted from page.
         """
         ...
 
 
 class NoPagination:
-    """Use when no pagination is required, e.g. the operation returns one response chunk."""
+    """Read one page of records."""
 
     def __init__(self, results_key: str | None = None) -> None:
         """Store the envelope key holding the records, or None when the body *is* the list."""
         self.results_key = results_key
 
     def first_params(self, params: QueryParams) -> QueryParams:
-        """Ask for nothing beyond what the caller wanted,there is only one request."""
+        """Copy the caller's query params unchanged."""
         return list(params)
 
     def records(self, page: JsonValue) -> list[JsonObject]:
         """Read the records out of the envelope."""
         return extract_records(page, self.results_key)
 
-    def next_params(
-        self,
-        page: JsonValue,
-        records: list[JsonObject],
-        params: QueryParams,
-        yielded: int,
-    ) -> QueryParams | None:
+    def next_params(self, page: JsonValue, records: list[JsonObject], params: QueryParams) -> QueryParams | None:
         """Always stop after the first page."""
         return None
 
 
 class PageNumber:
     """
-    Walk a numbered query param upwards until a page comes back empty.
+    Increment `page_param` from `start` by `step`, stopping on the first empty page.
 
-    Every request carries the param, e.g. `?page=1`, `?page=2` etc. `start` is where the
-    count begins.
-
-    `step` is the amount the `page_param` is bumped on every request: `start=100, step=100`
-    walks `?page=100`, `?page=200`, `?page=300`.
-
-    The walk ends on the first page carrying no records, so a vendor that serves an empty page
-    mid-collection would truncate it.
+    For example, `start=100, step=100` requests `?page=100`, `?page=200`, and so on.
     """
 
     def __init__(
@@ -176,13 +156,7 @@ class PageNumber:
         """Read the records out of the envelope."""
         return extract_records(page, self.results_key)
 
-    def next_params(
-        self,
-        page: JsonValue,
-        records: list[JsonObject],
-        params: QueryParams,
-        yielded: int,
-    ) -> QueryParams | None:
+    def next_params(self, page: JsonValue, records: list[JsonObject], params: QueryParams) -> QueryParams | None:
         """Advance the counter by `step` for as long as records keep arriving."""
         if not records:
             return None
@@ -195,21 +169,22 @@ class PageNumber:
 
 class CursorPagination:
     """
-    Read the next cursor from a JSON response envelope.
+    Fetch successive pages using a cursor supplied by the API.
 
-    By default, ``next_url`` carries a URL whose ``cursor`` query parameter selects the
-    next page. Only that parameter is read: the request keeps the operation's original
-    host and path, and credentials or other parameters from the URL are ignored.
-    Set ``cursor_from_url=False`` when ``next_key`` carries the token itself.
+    The first request uses the caller's parameters. The `cursor_param` defines
+    the param we use in the 2nd, 3rd etc. request to pass the "cursor value".
+    `next_key` is the key we check in the JSON returned from the API to retrieve the
+    cursor. `results_key` is to parse out the results. Some APIs return the cursor
+    as an already encoded URL, in this case we parse that url (stored in `next_key`)
+    retrieve the `cursor_param` and construct a new request. This can be disabled with
+    `cursor_from_url = False`.
 
-    The first request preserves the supplied parameters. Later requests send the cursor
-    and only parameters named in ``retain_params``; filters are otherwise discarded.
-    Missing or null continuation means completion. Empty, malformed, or immediately
-    repeated cursors raise ``ResponseShapeError`` instead of returning incomplete data
-    or requesting the same page indefinitely. URL cursors are query-decoded exactly once;
-    direct tokens remain unchanged. Empty tokens are not supported.
+    `retain_params` is a set of params you want to _always_ send with every request,
+    e.g. something like `type=brown`, some APIs encode those params in the `cursor_param`
+    already and it's not required.
 
-    Instances hold no per-walk state and may be shared by concurrent calls.
+    A missing or null next value stops pagination. An empty page with a cursor continues.
+    Invalid cursors or a cursor matching the current request raise ``ResponseShapeError``.
     """
 
     def __init__(
@@ -232,20 +207,14 @@ class CursorPagination:
         self.retain_params = frozenset(retain_params)
 
     def first_params(self, params: QueryParams) -> QueryParams:
-        """Preserve the initial filters without changing the caller's list."""
+        """Preserve the initial params."""
         return list(params)
 
     def records(self, page: JsonValue) -> list[JsonObject]:
         """Read records from the configured envelope member."""
         return extract_records(page, self.results_key)
 
-    def next_params(
-        self,
-        page: JsonValue,
-        records: list[JsonObject],
-        params: QueryParams,
-        yielded: int,
-    ) -> QueryParams | None:
+    def next_params(self, page: JsonValue, records: list[JsonObject], params: QueryParams) -> QueryParams | None:
         """Return a cursor request, or finish when the continuation is absent or null."""
         if not isinstance(page, dict):
             msg = f"expected an object carrying {self.next_key!r}, got {_describe(page)}"

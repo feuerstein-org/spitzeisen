@@ -3,10 +3,10 @@ spitzeisen: a neutral client framework for rate-limited REST APIs.
 
 Provides the machinery every API client re-implements — session lifecycle, retries with
 backoff, rate limiting, pagination, batch validation. httpx2 does the HTTP, confined to the
-request core so that no httpx2 type appears in a handwritten client's operation signatures.
+request core so that no httpx2 type appears in a client's operation signatures.
 Nothing here knows or cares what domain the API serves.
 
-Handwritten operation classes subclass `AsyncSpitzeisenApi` (or `SyncSpitzeisenApi` for the
+Operation classes subclass `AsyncSpitzeisenApi` (or `SyncSpitzeisenApi` for the
 blocking surface) and describe calls with a `SpitzeisenOperationSpec`.
 
 Naming: anything tied to one surface carries an `Async`/`Sync` prefix, and always a prefix —
@@ -54,16 +54,11 @@ from spitzeisen.pagination import (
     extract_records,
 )
 from spitzeisen.params import (
+    ParamScalar,
+    ParamValue,
     QueryParams,
     SerializedQueryParam,
     build_header_params,
-    coerce_choice,
-    coerce_choices,
-    coerce_date,
-    coerce_sort,
-    coerce_timestamp,
-    coerce_timestamps,
-    require_value,
     resolve_page_size,
     serialize_path_param,
     serialize_query_map,
@@ -89,6 +84,8 @@ __all__ = (
     "NotFoundError",
     "PageNumber",
     "PaginationStrategy",
+    "ParamScalar",
+    "ParamValue",
     "QueryParamAuth",
     "QueryParams",
     "ResponseShapeError",
@@ -104,17 +101,10 @@ __all__ = (
     "ValidationMode",
     "async_single_bucket",
     "build_header_params",
-    "coerce_choice",
-    "coerce_choices",
-    "coerce_date",
-    "coerce_sort",
-    "coerce_timestamp",
-    "coerce_timestamps",
     "extract_records",
     "gather_bounded",
     "http_error_from_status",
     "map_bounded",
-    "require_value",
     "resolve_page_size",
     "serialize_path_param",
     "serialize_query_map",

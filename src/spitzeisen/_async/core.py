@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
-from urllib.parse import quote, urlencode
 
 import structlog
 from httpx2 import URL, AsyncClient, NetworkError, Response, TimeoutException
@@ -40,12 +39,12 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-RETRYABLE = (TimeoutException, NetworkError)
+TRANSPORT_RETRYABLE = (TimeoutException, NetworkError)
 
 
 @functools.cache
 def _list_adapter(model: type[BaseModel]) -> TypeAdapter[list[Any]]:
-    """Build (and cache) a TypeAdapter that validates a whole list of `model` instances."""
+    """Build (and cache) a TypeAdapter that validates a whole list of Pydantic `model` instances."""
     return TypeAdapter(list[model])  # type: ignore[valid-type]
 
 
@@ -62,10 +61,10 @@ def _is_retryable(status: int) -> bool:
 
 class AsyncSpitzeisenApi:
     """
-    Shared transport and typed response helpers for handwritten API clients.
+    Shared transport and typed response helpers for API clients.
 
     Subclasses describe *what* to call with a `SpitzeisenOperationSpec` and call the
-    public request and collection helpers; they never touch the HTTP client or the limiter directly.
+    public request and collection helpers, they never touch the HTTP client or the limiter directly.
     """
 
     def __init__(self, config: AsyncSpitzeisenConfig) -> None:
@@ -78,7 +77,7 @@ class AsyncSpitzeisenApi:
         Return a cached API group sharing this client's config, connection, and limiter.
 
         Groups need only inherit this class and accept its config in their constructor.
-        The root context owns the connection; accessing a group does not acquire another
+        The root context owns the connection, accessing a group does not acquire another
         holder. A group may also be used as an independent context manager.
         """
         if api_class not in self._apis:
@@ -86,20 +85,15 @@ class AsyncSpitzeisenApi:
         return cast("ApiT", self._apis[api_class])
 
     async def __aenter__(self) -> Self:
-        """Register as a holder of the shared HTTP client; nothing is opened until first use."""
+        """Register as a holder of the shared HTTP client, nothing is opened until first use."""
         self.config.acquire()
         return self
 
     async def __aexit__(self, *args: object) -> None:
         """Close the HTTP client, unless another holder is still using it or the caller owns it."""
-        if self.config.release():
-            client = self.config.http_client
-            try:
-                await self._http_client.aclose()
-            finally:
-                if self.config.http_client is client:
-                    self.config.http_client = None
-                    self.config.owns_http_client = False
+        client = self.config.release()
+        if client is not None:
+            await client.aclose()
 
     @property
     def _http_client(self) -> AsyncClient:
@@ -109,50 +103,63 @@ class AsyncSpitzeisenApi:
         What spitzeisen builds, spitzeisen closes, a client supplied on the config is left open,
         because the caller may be sharing it with the rest of their process.
         """
-        if self.config.http_client is None:
-            self.config.http_client = AsyncClient(timeout=self.config.request_timeout)
-            self.config.owns_http_client = True
-        return self.config.http_client
+        return self.config.get_http_client()
 
     async def get_json(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
+        not_found_ok: bool = False,
         params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> JsonValue:
-        """Fetch decoded JSON through the shared transport used by handwritten operations."""
-        return await self.request(
-            operation_spec,
-            decoder=_decode_json,
-            params=params,
-            headers=headers,
-            path_params=path_params,
-        )
+        """
+        Fetch the decoded JSON body through the shared request transport.
 
-    async def request[ResultT](
+        HTTP 404 raises unless `not_found_ok=True`, in which case it returns None.
+        A successful JSON null also returns None regardless of this flag. Other HTTP
+        errors and invalid JSON still raise.
+
+        Use `request` directly for response headers, status, text, or bytes. JSON parsing
+        happens after HTTP handling and a parsing failure does not retry the request.
+        """
+        try:
+            response = await self.request(
+                operation_spec,
+                params=params,
+                headers=headers,
+                path_params=path_params,
+            )
+        except NotFoundError:
+            if not_found_ok:
+                return None
+            raise
+        return cast("JsonValue", response.json())
+
+    async def request(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
-        decoder: Callable[[Response], ResultT],
         params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
-        path_params: Mapping[str, object] | None = None,
-    ) -> ResultT:
+        path_params: Mapping[str, str] | None = None,
+    ) -> Response:
         """
-        Execute a handwritten operation with shared authentication, rate limiting, and retries.
+        Sends an HTTP request according to the details in the `operation_spec`, returns an HTTP response.
 
-        The synchronous decoder receives the buffered successful HTTP response, including its
-        bytes, headers, and status. It may parse CSV, return bytes, or construct a Pydantic model.
-        Decoder failures propagate unchanged and never trigger another HTTP request. HTTP errors
-        are raised before decoding and retain their response body and headers.
+        This is the lower-level alternative to `get_json`. Read `response.headers` and
+        `response.status_code`, decode with `response.json()` or `response.text`, or use
+        `response.content` for bytes.
 
-        Supply an already serialized bytes body and its Content-Type header for requests with a
-        payload. Only replayable bytes are accepted. Retries follow the operation's method and
-        retryable setting; POST and PATCH are not retried by default. The client config owns the
-        usual request timeout and connection lifecycle.
+        HTTP errors are raised before returning and retain their response body and headers.
+
+        POST and PATCH are not retried by default. The client config owns the usual request
+        timeout and connection lifecycle.
+
+        Returns:
+            The httpx2 response after HTTP error handling, with its body buffered in memory.
 
         Raises:
             MaxRetriesExceededError: If 429 responses persist past `max_retries`.
@@ -187,11 +194,9 @@ class AsyncSpitzeisenApi:
                         timeout=self.config.request_timeout,
                         content=content,
                     )
-                    # Encode after HTTP client defaults are merged, using %20 for spaces.
-                    query = urlencode(request.url.params.multi_items(), quote_via=quote).encode("ascii")
-                    request.url = request.url.copy_with(query=query or None)
                     response = await client.send(request)
-            except RETRYABLE as exc:
+            # This only triggers for non HTTP errors essentially, 5xx are handled below
+            except TRANSPORT_RETRYABLE as exc:
                 if attempt >= attempts:
                     raise TransportError(exc) from exc
                 logger.warning(
@@ -207,9 +212,9 @@ class AsyncSpitzeisenApi:
 
             status = response.status_code
             if not _is_retryable(status):
-                if status >= 400:  # noqa: PLR2004 - the HTTP error boundary
+                if status >= 400:  # noqa: PLR2004
                     raise _error_of(response)
-                return decoder(response)
+                return response
 
             if attempt >= attempts:
                 error = _error_of(response)
@@ -229,20 +234,6 @@ class AsyncSpitzeisenApi:
         msg = "Unexpected end of retry loop"
         raise RuntimeError(msg)
 
-    async def get_json_optional(
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        *,
-        params: QueryParams | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: object,
-    ) -> JsonValue:
-        """Like `get_json`, but return None when the resource does not exist (HTTP 404)."""
-        try:
-            return await self.get_json(operation_spec, params=params, headers=headers, **path_params)
-        except NotFoundError:
-            return None
-
     async def iter_records(
         self,
         operation_spec: SpitzeisenOperationSpec,
@@ -250,7 +241,7 @@ class AsyncSpitzeisenApi:
         params: QueryParams | None = None,
         max_results: int | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> AsyncIterator[JsonObject]:
         """
         Yield records across pages, following the operation's pagination strategy.
@@ -265,10 +256,10 @@ class AsyncSpitzeisenApi:
         # Get first page
         current = operation_spec.pagination.first_params(list(params or []))
         yielded = 0
-        seen: set[tuple[SerializedQueryParam, ...]] = set()
         while True:
-            _check_page_progress(current, seen)
-            page = await self.get_json(operation_spec, params=current, headers=headers, **path_params)
+            page = await self.get_json(
+                operation_spec, not_found_ok=False, params=current, headers=headers, **path_params
+            )
             # Extract the actual content from the HTTP response and yield each individual record
             records = operation_spec.pagination.records(page)
             for record in records:
@@ -277,48 +268,67 @@ class AsyncSpitzeisenApi:
                 if max_results is not None and yielded >= max_results:
                     return
             # The strategy decides what the next page needs, or if this was the final page returns None.
-            next_params = operation_spec.pagination.next_params(page, records, current, yielded)
+            next_params = operation_spec.pagination.next_params(page, records, current)
             if next_params is None:
                 return
             current = list(next_params)
+
+    @overload
+    async def get_records(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        not_found_ok: Literal[False] = False,
+        params: QueryParams | None = None,
+        max_results: int | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> list[JsonObject]: ...
+
+    @overload
+    async def get_records(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        not_found_ok: bool = False,
+        params: QueryParams | None = None,
+        max_results: int | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> list[JsonObject] | None: ...
 
     async def get_records(
         self,
         operation_spec: SpitzeisenOperationSpec,
         *,
+        not_found_ok: bool = False,
         params: QueryParams | None = None,
         max_results: int | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
-    ) -> list[JsonObject]:
-        """Collect records across pages into a list of raw dicts, capped at `max_results`."""
-        return [
-            record
-            async for record in self.iter_records(
-                operation_spec,
-                params=params,
-                max_results=max_results,
-                headers=headers,
-                **path_params,
-            )
-        ]
-
-    async def get_records_optional(
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        *,
-        params: QueryParams | None = None,
-        max_results: int | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> list[JsonObject] | None:
-        """Collect pages like ``get_records``, mapping any HTTP 404 to None."""
+        """
+        Collect records across pages into a list of raw dicts, capped at `max_results`.
+
+        HTTP 404 raises unless `not_found_ok=True`, which returns None if any page is
+        missing, discarding previously collected records. A successful empty collection
+        returns an empty list. Other HTTP, JSON decoding, and response-shape errors raise.
+        """
         try:
-            return await self.get_records(
-                operation_spec, params=params, max_results=max_results, headers=headers, **path_params
-            )
+            return [
+                record
+                async for record in self.iter_records(
+                    operation_spec,
+                    params=params,
+                    max_results=max_results,
+                    headers=headers,
+                    **path_params,
+                )
+            ]
         except NotFoundError:
-            return None
+            if not_found_ok:
+                return None
+            raise
 
     async def get_models[ModelT: BaseModel](
         self,
@@ -329,21 +339,22 @@ class AsyncSpitzeisenApi:
         max_results: int | None = None,
         on_validation_error: ValidationMode | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> list[ModelT]:
         """
-        Collect a typed list, applying the record cap before raise/skip validation.
+        Collect a typed list, applying the record cap (`max_results`) before raise/skip validation.
 
         The cap counts raw records, so skipping invalid rows can return fewer models.
-        HTTP, decoding, and envelope errors always propagate; only Pydantic record
+        HTTP, decoding, and envelope errors always propagate, only Pydantic record
         validation is governed by ``on_validation_error``.
         """
         mode = self._resolve_validation_mode(on_validation_error)
         records = await self.get_records(
-            operation_spec, params=params, max_results=max_results, headers=headers, **path_params
+            operation_spec, not_found_ok=False, params=params, max_results=max_results, headers=headers, **path_params
         )
         return self.validate_records(records, model, mode)
 
+    # Overloads to return ModelT or None depending on whether not_found_ok was passed or not
     @overload
     async def get_model[ModelT: BaseModel](
         self,
@@ -354,7 +365,7 @@ class AsyncSpitzeisenApi:
         not_found_ok: Literal[False] = False,
         params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> ModelT: ...
 
     @overload
@@ -367,7 +378,7 @@ class AsyncSpitzeisenApi:
         not_found_ok: bool = False,
         params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> ModelT | None: ...
 
     async def get_model[ModelT: BaseModel](
@@ -379,17 +390,19 @@ class AsyncSpitzeisenApi:
         not_found_ok: bool = False,
         params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
-        **path_params: object,
+        **path_params: str,
     ) -> ModelT | None:
         """
         Parse one response object, optionally unwrapping a vendor envelope.
 
-        Only an HTTP 404 becomes None, and only with ``not_found_ok=True``. Missing or
-        null envelopes are shape errors; model validation failures always propagate.
+        An HTTP 404 becomes None, with ``not_found_ok=True``. Missing or
+        null envelopes are shape errors, model validation failures always propagate.
         Use a model's Pydantic aliases/validators for nested vendor-specific layouts.
         """
         try:
-            value = await self.get_json(operation_spec, params=params, headers=headers, **path_params)
+            value = await self.get_json(
+                operation_spec, not_found_ok=False, params=params, headers=headers, **path_params
+            )
         except NotFoundError:
             if not_found_ok:
                 return None
@@ -413,18 +426,14 @@ class AsyncSpitzeisenApi:
         return mode
 
     def validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
-        """Validate supplied values while preserving None as the wire-omission escape hatch."""
+        """Validate supplied values while allowing None for backwards compatibility."""
         if value is None or not self.config.strict_inputs:
             return value
         return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
 
     def validate_response[ModelT: BaseModel](self, value: JsonObject, model: type[ModelT]) -> ModelT:
-        """Parse one response using the client's optional constraint checks."""
-        return model.model_validate(value, context=self._response_validation_context())
-
-    def _response_validation_context(self) -> dict[str, bool]:
-        """Snapshot the policy for one validation, including every nested value."""
-        return {"strict_response_validation": self.config.strict_response_validation}
+        """Parse one response using the supplied model's ordinary Pydantic rules."""
+        return model.model_validate(value)
 
     def validate_records[ModelT: BaseModel](
         self,
@@ -441,33 +450,18 @@ class AsyncSpitzeisenApi:
         """
         mode = self._resolve_validation_mode(mode)
         adapter = _list_adapter(model)
-        context = self._response_validation_context()
         if mode == "raise":
-            return cast("list[ModelT]", adapter.validate_python(records, context=context))
+            return cast("list[ModelT]", adapter.validate_python(records))
         try:
-            return cast("list[ModelT]", adapter.validate_python(records, context=context))
+            return cast("list[ModelT]", adapter.validate_python(records))
         except ValidationError:
             validated: list[ModelT] = []
             for record in records:
                 try:
-                    validated.append(model.model_validate(record, context=context))
+                    validated.append(model.model_validate(record))
                 except ValidationError as exc:
                     logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
             return validated
-
-
-def _check_page_progress(params: QueryParams, seen: set[tuple[SerializedQueryParam, ...]]) -> None:
-    """Stop a broken pagination cycle before issuing a duplicate paid request."""
-    key = tuple(sorted(params, key=lambda item: item.name))
-    if key in seen:
-        msg = "pagination repeated a previous request"
-        raise ResponseShapeError(msg)
-    seen.add(key)
-
-
-def _decode_json(response: Response) -> JsonValue:
-    """Decode the JSON body after transport and HTTP errors have been handled."""
-    return cast("JsonValue", response.json())
 
 
 def _error_of(response: Response) -> HTTPError:

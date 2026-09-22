@@ -5,6 +5,7 @@ This module is transformed into the sync counterpart by unasync. Keep its wordin
 and its behaviour mechanically convertible.
 """
 
+from contextlib import nullcontext
 from typing import Literal
 
 from httpx2 import AsyncClient
@@ -29,15 +30,12 @@ class AsyncSpitzeisenConfig(BaseModel):
         retry_backoff_base: Multiplier for the exponential backoff. Set to 0 to retry immediately.
         retry_backoff_floor: Lower bound time between retries in seconds.
         on_validation_error: Default behaviour of validated list methods. "raise" propagates
-            `pydantic.ValidationError` with all invalid record indices; "skip" drops and logs them.
+            `pydantic.ValidationError` with all invalid record indices, "skip" drops and logs them.
         strict_inputs: Validate non-None arguments passed to ``validate_input`` with Pydantic strict mode before
             serialization. Off by default so Python-compatible values retain the permissive SDK
-            behavior; enable it when boundary validation is more important than coercion.
-        strict_response_validation: Enforce modeled response constraints and known enum values.
-            Off by default for API compatibility. Applies to nested models using ``response_constraints`` too;
-            does not change parsing, member optionality, or raw response methods.
+            behavior, enable it when boundary validation is more important than coercion.
         http_client: The httpx2 client for this surface. Supply one when custom transport
-            behaviour is required; otherwise Spitzeisen creates and owns it lazily.
+            behaviour is required, otherwise Spitzeisen creates and owns it lazily.
         owns_http_client: Whether Spitzeisen closes `http_client` automatically. Set for a client
             Spitzeisen built, or explicitly to hand ownership of a supplied client to it.
         limiter: A limiter for this surface. Defaults to `NoLimit`.
@@ -54,28 +52,45 @@ class AsyncSpitzeisenConfig(BaseModel):
     retry_backoff_floor: float = Field(default=1.0, ge=0)
     on_validation_error: ValidationMode = "skip"
     strict_inputs: bool = False
-    strict_response_validation: bool = False
 
     http_client: AsyncClient | None = None
     owns_http_client: bool = False
     limiter: AsyncLimiter = Field(default_factory=NoLimit)
 
     _refcount: int = PrivateAttr(default=0)
+    _lock: nullcontext[None] = PrivateAttr(default_factory=nullcontext)
+
+    # Lock is set to be a no-op in async, required for sync
+    def get_http_client(self) -> AsyncClient:
+        """Build the shared client once, including during concurrent first requests."""
+        with self._lock:
+            if self.http_client is None:
+                self.http_client = AsyncClient(timeout=self.request_timeout)
+                self.owns_http_client = True
+            return self.http_client
 
     def acquire(self) -> None:
         """Register one more holder of the shared HTTP client."""
-        self._refcount += 1
+        with self._lock:
+            self._refcount += 1
 
-    def release(self) -> bool:
+    def release(self) -> AsyncClient | None:
         """
-        Deregister a holder and report whether the HTTP client should now be closed.
+        Deregister a holder and detach the owned client when its last holder exits.
 
-        True only when the last holder has exited and the client is Spitzeisen's to close: one
-        that was never built stays None, and one the caller supplied remains open unless the
-        caller explicitly handed over ownership.
+        The caller closes the returned client themselves. New holders can create a fresh
+        connection while the detached client finishes closing. A caller-supplied client stays
+        attached and open unless its ownership was explicitly handed over.
         """
-        self._refcount = max(0, self._refcount - 1)
-        return self._refcount == 0 and self.http_client is not None and self.owns_http_client
+        # Lock is set to be a no-op in async, required for sync
+        with self._lock:
+            self._refcount = max(0, self._refcount - 1)
+            if self._refcount or not self.owns_http_client:
+                return None
+            client = self.http_client
+            self.http_client = None
+            self.owns_http_client = False
+            return client
 
     def backoff(self, attempt: int) -> float:
         """Return the exponential retry delay in seconds, subject to the configured floor."""

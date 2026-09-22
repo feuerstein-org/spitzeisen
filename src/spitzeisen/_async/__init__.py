@@ -1,1 +1,1 @@
-"""The awaitable request core, from which `_sync` is generated."""
+"""HTTP request core and client configuration."""
