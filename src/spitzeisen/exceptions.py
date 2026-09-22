@@ -1,13 +1,8 @@
 """
 Exception hierarchy for operational errors raised at request time.
 
-These are distinct from input-validation errors (which raise the built-in `ValueError`) and
-from `pydantic.ValidationError` raised by validated list methods. Catch `SpitzeisenError` to
-handle any operational failure a client raises.
-
-HTTP error responses are wrapped in an `HTTPError` subclass so callers never have to reach for
-the underlying transport library to branch on failures. The originating library exception, when
-there was one, is preserved on `__cause__`.
+HTTP error responses are wrapped in an `HTTPError` subclass which itself subclasses
+SpitzeisenError The originating library exception, when there was one, is preserved on `__cause__`.
 
 A client library that wants its own vocabulary should alias rather than subclass, so that
 `except MyApiError:` and `except SpitzeisenError:` catch exactly the same objects::

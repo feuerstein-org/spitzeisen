@@ -1,7 +1,7 @@
 [project]
 name = "spitzeisen"
 version = "0.1.0"
-description = "A shared async/sync core for handwritten REST API SDKs"
+description = "A shared async/sync core for REST API SDKs"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
@@ -19,9 +19,8 @@ classifiers = [
 dependencies = [
     "httpx2>=2.7.0",
     "pydantic>=2.11.7",
-    "steindamm>=0.8.0",
+    "steindamm>=0.11.1",
     "structlog>=25.1.0",
-    "typing-extensions>=4.13.0",
 ]
 
 [project.urls]
