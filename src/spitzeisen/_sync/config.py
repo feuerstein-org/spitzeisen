@@ -1,5 +1,5 @@
 # Generated from src/spitzeisen/_async/ by build_sync.py -- do not edit.
-# Change the async module and run `mise run build-sync`.
+# Change the async module and run `python build_sync.py`.
 """
 Connection-level configuration for one client surface.
 

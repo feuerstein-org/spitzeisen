@@ -32,12 +32,15 @@ def print_weather(weather: CurrentWeather | None, forecast: Forecast | None) -> 
     """Display the shared response models returned by both clients."""
     if weather is not None:
         print(f"city: {weather.name}")
-        print(f"temperature: {weather.main.temp} °C")
-        print(f"condition: {weather.weather[0].description}")
+        print(f"temperature: {weather.measurements.temperature} °C")
+        print(f"condition: {weather.conditions[0].description}")
     if forecast is not None:
         print(f"forecast city: {forecast.city.name}")
         for reading in forecast.readings:
-            print(f"forecast: {reading.time.isoformat()} — {reading.main.temp} °C — {reading.weather[0].description}")
+            print(
+                f"forecast: {reading.time.isoformat()} - "
+                f"{reading.measurements.temperature} °C - {reading.conditions[0].description}"
+            )
 
 
 # Asynchronous example
@@ -45,10 +48,10 @@ async def main_async() -> None:
     """Fetch current conditions and forecasts with the async client."""
     config = WeatherApiConfig(
         api_key="example-key",
-        on_validation_error="skip",
+        on_validation_error="skip",  # If a single record from the API fails validation - skip it
         validate_inputs=True,  # Check inputs before sending request
         http_client=httpx2.AsyncClient(transport=make_router().mock_transport()),
-        owns_http_client=True,  # Close this supplied client when its last API context exits.
+        owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )
 
     async with WeatherApi(config) as api:
@@ -68,10 +71,10 @@ def main_sync() -> None:
     """Fetch the same models with the blocking client."""
     config = SyncWeatherApiConfig(
         api_key="example-key",
-        on_validation_error="skip",
+        on_validation_error="skip",  # If a single record from the API fails validation - skip it
         validate_inputs=True,  # Check inputs before sending request
         http_client=httpx2.Client(transport=make_router().mock_transport()),
-        owns_http_client=True,  # Close this supplied client when its last API context exits.
+        owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )
 
     with SyncWeatherApi(config) as api:
