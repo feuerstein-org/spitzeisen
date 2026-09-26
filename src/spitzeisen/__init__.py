@@ -6,22 +6,17 @@ backoff, rate limiting, pagination, batch validation. httpx2 does the HTTP, conf
 request core so that no httpx2 type appears in a client's operation signatures.
 Nothing here knows or cares what domain the API serves.
 
-Operation classes subclass `AsyncSpitzeisenApi` (or `SyncSpitzeisenApi` for the
+Operation classes subclass `SpitzeisenApi` (or `SyncSpitzeisenApi` for the
 blocking surface) and describe calls with a `SpitzeisenOperationSpec`.
 
-Naming: anything tied to one surface carries an `Async`/`Sync` prefix, and always a prefix —
-`AsyncSpitzeisenApi`/`SyncSpitzeisenApi`, `AsyncSpitzeisenConfig`/`SyncSpitzeisenConfig`,
-`AsyncLimiter`/`SyncLimiter`. An unmarked name is shared by both surfaces, which most of
-spitzeisen is: `SpitzeisenOperationSpec`, the auth and pagination strategies, every exception.
-SDK clients can follow the same rule. The prefix is
-load-bearing rather than cosmetic — unasync converts `AsyncFoo` to `SyncFoo` on its own, so a
-type named this way needs no entry in `build_sync.py`'s replacement table.
+Public async clients and helpers use unprefixed names, blocking counterparts use `Sync` or `sync_`.
+Shared models, strategies, and exceptions use the same names on both surfaces.
 """
 
-from spitzeisen._async.config import AsyncSpitzeisenConfig, ValidationMode
-from spitzeisen._async.core import AsyncSpitzeisenApi
-from spitzeisen._sync.config import SyncSpitzeisenConfig
-from spitzeisen._sync.core import SyncSpitzeisenApi
+from spitzeisen._async.config import SpitzeisenConfig, ValidationMode
+from spitzeisen._async.core import SpitzeisenApi
+from spitzeisen._sync.config import SpitzeisenConfig as SyncSpitzeisenConfig
+from spitzeisen._sync.core import SpitzeisenApi as SyncSpitzeisenApi
 from spitzeisen.auth import AuthStrategy, BearerHeader, HeaderKey, NoAuth, QueryParamAuth
 from spitzeisen.concurrency import gather_bounded, map_bounded
 from spitzeisen.exceptions import (
@@ -36,10 +31,10 @@ from spitzeisen.exceptions import (
     http_error_from_status,
 )
 from spitzeisen.limits import (
-    AsyncLimiter,
+    Limiter,
     NoLimit,
     SyncLimiter,
-    async_single_bucket,
+    single_bucket,
     sync_single_bucket,
 )
 from spitzeisen.models import SpitzeisenModel
@@ -66,9 +61,6 @@ from spitzeisen.params import (
 )
 
 __all__ = (
-    "AsyncLimiter",
-    "AsyncSpitzeisenApi",
-    "AsyncSpitzeisenConfig",
     "AuthStrategy",
     "AuthenticationError",
     "BearerHeader",
@@ -77,6 +69,7 @@ __all__ = (
     "HeaderKey",
     "JsonObject",
     "JsonValue",
+    "Limiter",
     "MaxRetriesExceededError",
     "NoAuth",
     "NoLimit",
@@ -91,6 +84,8 @@ __all__ = (
     "ResponseShapeError",
     "SerializedQueryParam",
     "ServerError",
+    "SpitzeisenApi",
+    "SpitzeisenConfig",
     "SpitzeisenError",
     "SpitzeisenModel",
     "SpitzeisenOperationSpec",
@@ -99,7 +94,6 @@ __all__ = (
     "SyncSpitzeisenConfig",
     "TransportError",
     "ValidationMode",
-    "async_single_bucket",
     "build_header_params",
     "extract_records",
     "gather_bounded",
@@ -109,5 +103,6 @@ __all__ = (
     "serialize_path_param",
     "serialize_query_map",
     "serialize_query_param",
+    "single_bucket",
     "sync_single_bucket",
 )

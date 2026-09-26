@@ -35,7 +35,7 @@ from spitzeisen.exceptions import (
 from spitzeisen.params import QueryParams, SerializedQueryParam
 
 if TYPE_CHECKING:
-    from spitzeisen._sync.config import SyncSpitzeisenConfig, ValidationMode
+    from spitzeisen._sync.config import SpitzeisenConfig, ValidationMode
     from spitzeisen.operations import SpitzeisenOperationSpec
     from spitzeisen.pagination import JsonObject, JsonValue
 
@@ -61,7 +61,7 @@ def _is_retryable(status: int) -> bool:
     return status == HTTP_TOO_MANY_REQUESTS or status >= HTTP_SERVER_ERROR_MIN
 
 
-class SyncSpitzeisenApi:
+class SpitzeisenApi:
     """
     Shared transport and typed response helpers for API clients.
 
@@ -69,12 +69,12 @@ class SyncSpitzeisenApi:
     public request and collection helpers, they never touch the HTTP client or the limiter directly.
     """
 
-    def __init__(self, config: SyncSpitzeisenConfig) -> None:
+    def __init__(self, config: SpitzeisenConfig) -> None:
         """Bind the shared configuration."""
         self.config = config
-        self._apis: dict[type[SyncSpitzeisenApi], SyncSpitzeisenApi] = {}
+        self._apis: dict[type[SpitzeisenApi], SpitzeisenApi] = {}
 
-    def api[ApiT: SyncSpitzeisenApi](self, api_class: type[ApiT]) -> ApiT:
+    def api[ApiT: SpitzeisenApi](self, api_class: type[ApiT]) -> ApiT:
         """
         Return a cached API group sharing this client's config, connection, and limiter.
 
@@ -138,6 +138,65 @@ class SyncSpitzeisenApi:
                 return None
             raise
         return cast("JsonValue", response.json())
+
+    @overload
+    def get_object(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        result_key: str | None = None,
+        not_found_ok: Literal[False] = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> JsonObject: ...
+
+    @overload
+    def get_object(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        result_key: str | None = None,
+        not_found_ok: bool = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> JsonObject | None: ...
+
+    def get_object(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        result_key: str | None = None,
+        not_found_ok: bool = False,
+        params: QueryParams | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> JsonObject | None:
+        """
+        Fetch one response object, optionally unwrapping a vendor envelope.
+
+        HTTP 404 raises unless `not_found_ok=True`, which returns None. Successful
+        nulls, other non-object values, and missing envelope keys raise ResponseShapeError.
+        Returned fields are unchanged.
+        """
+        # don't pass not_found_ok to get_json since otherwise for both 404 and empty response
+        # we would return a ResponseShapeError.
+        try:
+            value = self.get_json(operation_spec, not_found_ok=False, params=params, headers=headers, **path_params)
+        except NotFoundError:
+            if not_found_ok:
+                return None
+            raise
+        if result_key is not None:
+            if not isinstance(value, dict) or result_key not in value:
+                msg = f"expected response envelope containing {result_key!r}"
+                raise ResponseShapeError(msg)
+            value = value[result_key]
+        if not isinstance(value, dict):
+            msg = "expected a response object"
+            raise ResponseShapeError(msg)
+        return value
 
     def request(
         self,
@@ -399,21 +458,15 @@ class SyncSpitzeisenApi:
         null envelopes are shape errors, model validation failures always propagate.
         Use a model's Pydantic aliases/validators for nested vendor-specific layouts.
         """
-        try:
-            value = self.get_json(operation_spec, not_found_ok=False, params=params, headers=headers, **path_params)
-        except NotFoundError:
-            if not_found_ok:
-                return None
-            raise
-        if result_key is not None:
-            if not isinstance(value, dict) or result_key not in value:
-                msg = f"expected response envelope containing {result_key!r}"
-                raise ResponseShapeError(msg)
-            value = value[result_key]
-        if not isinstance(value, dict):
-            msg = "expected a response object"
-            raise ResponseShapeError(msg)
-        return self.validate_response(value, model)
+        value = self.get_object(
+            operation_spec,
+            result_key=result_key,
+            not_found_ok=not_found_ok,
+            params=params,
+            headers=headers,
+            **path_params,
+        )
+        return self.validate_record(value, model, mode="raise") if value is not None else None
 
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""
@@ -425,13 +478,37 @@ class SyncSpitzeisenApi:
 
     def validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
         """Validate supplied values while allowing None for backwards compatibility."""
-        if value is None or not self.config.strict_inputs:
+        if value is None or not self.config.validate_inputs:
             return value
         return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
 
-    def validate_response[ModelT: BaseModel](self, value: JsonObject, model: type[ModelT]) -> ModelT:
-        """Parse one response using the supplied model's ordinary Pydantic rules."""
-        return model.model_validate(value)
+    @overload
+    def validate_record[ModelT: BaseModel](
+        self, record: JsonObject, model: type[ModelT], mode: Literal["raise"]
+    ) -> ModelT: ...
+
+    @overload
+    def validate_record[ModelT: BaseModel](
+        self, record: JsonObject, model: type[ModelT], mode: ValidationMode | None = None
+    ) -> ModelT | None: ...
+
+    def validate_record[ModelT: BaseModel](
+        self, record: JsonObject, model: type[ModelT], mode: ValidationMode | None = None
+    ) -> ModelT | None:
+        """
+        Validate one raw object, including nested fields, into a Pydantic model.
+
+        `mode=None` uses the config's policy. "raise" propagates `ValidationError`,
+        "skip" logs the error and returns None.
+        """
+        mode = self._resolve_validation_mode(mode)
+        try:
+            return model.model_validate(record)
+        except ValidationError as exc:
+            if mode == "raise":
+                raise
+            logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
+            return None
 
     def validate_records[ModelT: BaseModel](
         self,
@@ -442,9 +519,10 @@ class SyncSpitzeisenApi:
         """
         Validate raw records into `model` instances, validating the whole list at once.
 
-        With mode "raise", an invalid record raises `pydantic.ValidationError` aggregating
-        every bad row by index. With mode "skip", we first try the same path as for "raise" but
-        on failure we rerun the validation this time with individual items and log the failing ones.
+        `mode=None` uses the config's policy. With mode "raise", an invalid record raises
+        `pydantic.ValidationError` aggregating every bad row by index. With mode "skip",
+        we first try the same path as for "raise" but on failure we rerun the validation
+        this time with individual items and log the failing ones.
         """
         mode = self._resolve_validation_mode(mode)
         adapter = _list_adapter(model)
@@ -455,10 +533,9 @@ class SyncSpitzeisenApi:
         except ValidationError:
             validated: list[ModelT] = []
             for record in records:
-                try:
-                    validated.append(model.model_validate(record))
-                except ValidationError as exc:
-                    logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
+                parsed = self.validate_record(record, model, mode="skip")
+                if parsed is not None:
+                    validated.append(parsed)
             return validated
 
 

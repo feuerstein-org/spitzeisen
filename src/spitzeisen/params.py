@@ -61,7 +61,7 @@ def serialize_path_param(value: ParamScalar, *, greedy: bool = False) -> str:
 def serialize_query_param(value: ParamValue, *, name: str) -> QueryParams:
     """Serialize a scalar or repeated query binding, omitting None and empty collections."""
     if isinstance(value, Mapping):
-        msg = "Query mappings require serialize_query_map; query bindings accept scalars or collections."
+        msg = "Query mappings should be passed to serialize_query_map."
         raise TypeError(msg)
     return [SerializedQueryParam(name, item) for item in _values(value)]
 

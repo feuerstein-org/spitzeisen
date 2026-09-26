@@ -1,0 +1,1 @@
+"""OpenWeather clients and configuration."""

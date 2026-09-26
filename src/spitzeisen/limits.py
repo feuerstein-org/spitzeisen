@@ -17,7 +17,7 @@ REFILL_INTERVAL_SECONDS = 0.1
 
 
 @runtime_checkable
-class AsyncLimiter(Protocol):
+class Limiter(Protocol):
     """Something that limits a request until capacity is available."""
 
     def __call__(self, cost: float, /) -> AbstractAsyncContextManager[object]:
@@ -47,7 +47,7 @@ class NoLimit:
         return "NoLimit()"
 
 
-def async_single_bucket(
+def single_bucket(
     name: str,
     requests_per_period: float,
     period_seconds: float,
@@ -59,7 +59,7 @@ def async_single_bucket(
     Build the default awaitable limiter: one smoothly-refilling bucket.
 
     `requests_per_period` is the initial capacity, the bucket is refilled smoothly instead of at the
-    end of `period_seconds`. Construct a custom AsyncLimiter for more control.
+    end of `period_seconds`. Construct a custom Limiter for more control.
 
     Pass a redis connection to share the bucket across processes, without one it is in-memory.
     Bucket expires after `max(120, period_seconds * 2)` (gets cleared).

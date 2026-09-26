@@ -11,11 +11,17 @@ run = [
 
 [tasks.build-sync]
 description = "Generate the blocking surface in _sync/ from _async/ via unasync"
-run = "uv run python build_sync.py"
+run = [ 
+    "uv run python build_sync.py",
+    "uv run python examples/build_sync.py"
+]
 
 [tasks.check-sync]
 description = "Fail if _sync/ is stale relative to _async/"
-run = "uv run python build_sync.py --check"
+run = [ 
+    "uv run python build_sync.py --check",
+    "uv run python examples/build_sync.py --check"
+]
 
 [tasks.demo-example]
 description = "Run the weather API example against an offline fake transport"

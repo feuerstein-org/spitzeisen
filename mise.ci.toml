@@ -17,8 +17,11 @@ run = [
 ]
 
 [tasks.check-sync-ci]
-description = "Fail if the committed _sync tree is stale (CI only)"
-run = "uv run python build_sync.py --check"
+description = "Check generated sync code for the runtime and example (CI only)"
+run = [
+    "uv run python build_sync.py --check",
+    "uv run python examples/build_sync.py --check",
+]
 
 [tasks.pre-commit-ci]
 description = "Run pre-commit hooks (CI only)"
