@@ -30,8 +30,8 @@ from spitzeisen.exceptions import (
     TransportError,
     http_error_from_status,
 )
+from spitzeisen.limits import AsyncLimiter as Limiter
 from spitzeisen.limits import (
-    Limiter,
     NoLimit,
     SyncLimiter,
     single_bucket,

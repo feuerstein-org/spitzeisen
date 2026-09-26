@@ -12,7 +12,7 @@ from httpx2 import AsyncClient
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from spitzeisen.auth import AuthStrategy, NoAuth
-from spitzeisen.limits import Limiter, NoLimit
+from spitzeisen.limits import AsyncLimiter, NoLimit
 
 ValidationMode = Literal["raise", "skip"]
 
@@ -57,7 +57,7 @@ class SpitzeisenConfig(BaseModel):
 
     http_client: AsyncClient | None = None
     owns_http_client: bool = False
-    limiter: Limiter = Field(default_factory=NoLimit)
+    limiter: AsyncLimiter = Field(default_factory=NoLimit)
 
     _refcount: int = PrivateAttr(default=0)
     _lock: nullcontext[None] = PrivateAttr(default_factory=nullcontext)
