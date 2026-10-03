@@ -61,7 +61,7 @@ def _is_retryable(status: int) -> bool:
 
 class SpitzeisenApi:
     """
-    Shared transport and typed response helpers for API clients.
+    Shared transport, raw response helpers, and model validation for API clients.
 
     Subclasses describe *what* to call with a `SpitzeisenOperationSpec` and call the
     public request and collection helpers, they never touch the HTTP client or the limiter directly.
@@ -390,85 +390,6 @@ class SpitzeisenApi:
             if not_found_ok:
                 return None
             raise
-
-    async def get_models[ModelT: BaseModel](
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        model: type[ModelT],
-        *,
-        params: QueryParams | None = None,
-        max_results: int | None = None,
-        on_validation_error: ValidationMode | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: str,
-    ) -> list[ModelT]:
-        """
-        Collect a typed list, applying the record cap (`max_results`) before raise/skip validation.
-
-        The cap counts raw records, so skipping invalid rows can return fewer models.
-        HTTP, decoding, and envelope errors always propagate, only Pydantic record
-        validation is governed by ``on_validation_error``.
-        """
-        mode = self._resolve_validation_mode(on_validation_error)
-        records = await self.get_records(
-            operation_spec, not_found_ok=False, params=params, max_results=max_results, headers=headers, **path_params
-        )
-        return self.validate_records(records, model, mode)
-
-    # Overloads to return ModelT or None depending on whether not_found_ok was passed or not
-    @overload
-    async def get_model[ModelT: BaseModel](
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        model: type[ModelT],
-        *,
-        result_key: str | None = None,
-        not_found_ok: Literal[False] = False,
-        params: QueryParams | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: str,
-    ) -> ModelT: ...
-
-    @overload
-    async def get_model[ModelT: BaseModel](
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        model: type[ModelT],
-        *,
-        result_key: str | None = None,
-        not_found_ok: bool = False,
-        params: QueryParams | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: str,
-    ) -> ModelT | None: ...
-
-    async def get_model[ModelT: BaseModel](
-        self,
-        operation_spec: SpitzeisenOperationSpec,
-        model: type[ModelT],
-        *,
-        result_key: str | None = None,
-        not_found_ok: bool = False,
-        params: QueryParams | None = None,
-        headers: Mapping[str, str] | None = None,
-        **path_params: str,
-    ) -> ModelT | None:
-        """
-        Parse one response object, optionally unwrapping a vendor envelope.
-
-        An HTTP 404 becomes None, with ``not_found_ok=True``. Missing or
-        null envelopes are shape errors, model validation failures always propagate.
-        Use a model's Pydantic aliases/validators for nested vendor-specific layouts.
-        """
-        value = await self.get_object(
-            operation_spec,
-            result_key=result_key,
-            not_found_ok=not_found_ok,
-            params=params,
-            headers=headers,
-            **path_params,
-        )
-        return self.validate_record(value, model, mode="raise") if value is not None else None
 
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""

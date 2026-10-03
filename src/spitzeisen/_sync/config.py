@@ -31,10 +31,9 @@ class SpitzeisenConfig(BaseModel):
         request_timeout: Per-request timeout in seconds, applied to owned and caller-supplied HTTP clients.
         retry_backoff_base: Multiplier for the exponential backoff. Set to 0 to retry immediately.
         retry_backoff_floor: Lower bound time between retries in seconds.
-        on_validation_error: Default policy for `validate_record`, `validate_records`, and
-            `get_models`. "raise" propagates `pydantic.ValidationError`; "skip" logs failures
-            and returns None for one invalid record or drops invalid records from a list.
-            `get_model` always raises validation errors.
+        on_validation_error: Default policy for `validate_record` and `validate_records`.
+            "raise" propagates `pydantic.ValidationError`; "skip" logs failures and returns
+            None for one invalid record or drops invalid records from a list.
         validate_inputs: Validate non-None arguments passed to ``validate_input`` with Pydantic strict mode before
             serialization. Off by default so Python-compatible values retain the permissive SDK
             behavior, enable it when boundary validation is more important than coercion.
