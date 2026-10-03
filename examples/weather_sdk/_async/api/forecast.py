@@ -32,6 +32,10 @@ class ForecastApi(BaseWeatherApi):
 
         See `get_forecast` for parameters and request errors.
         """
+        # You can add your own validation of the input if required.
+        # Make sure it only runs when the validate_inputs flag is set
+        if self.config.validate_inputs:
+            UNITS_ADAPTER.validate_python(units)
         return await self.get_object(
             _FORECAST,
             # serialize_query_map will construct the query string to send to the API.
@@ -39,8 +43,7 @@ class ForecastApi(BaseWeatherApi):
                 {
                     # "q" is what's actually sent to the API, city is the value.
                     "q": city,
-                    # You can add your own validation of the input if required.
-                    "units": UNITS_ADAPTER.validate_python(units),
+                    "units": units,
                     "lang": language,
                 },
             ),

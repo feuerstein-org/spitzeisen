@@ -31,6 +31,10 @@ class CurrentWeatherApi(BaseWeatherApi):
 
         See `get_current_weather` for parameters and request errors.
         """
+        # You can add your own validation of the input if required.
+        # Make sure it only runs when the validate_inputs flag is set
+        if self.config.validate_inputs:
+            UNITS_ADAPTER.validate_python(units)
         return await self.get_object(
             _CURRENT_WEATHER,
             not_found_ok=True,
@@ -40,8 +44,7 @@ class CurrentWeatherApi(BaseWeatherApi):
                     # Coordinate types are checked only when config.validate_inputs is True.
                     "lat": self.validate_input(latitude, float),
                     "lon": self.validate_input(longitude, float),
-                    # Units are checked independently of validate_inputs.
-                    "units": UNITS_ADAPTER.validate_python(units),
+                    "units": units,
                     "lang": language,
                 },
             ),
@@ -55,6 +58,9 @@ class CurrentWeatherApi(BaseWeatherApi):
         longitude: float,
         units: Units = "standard",
         language: str | None = None,
+        # By letting the client pass this we allow them to decide
+        # whether they want to override the validation mode, alterntively
+        # this can be set exclusively in the config.
         on_validation_error: ValidationMode | None = None,
     ) -> CurrentWeather | None:
         """
