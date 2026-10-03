@@ -14,18 +14,13 @@ from weather_sdk import (
     WeatherApiConfig,
 )
 
-from spitzeisen.testing import FakeRouter
-
 
 # This is to return fake data and not call the actual API - can be ignored
-def make_router() -> FakeRouter:
-    """Script the same responses for either client."""
+def mock_response(request: httpx2.Request) -> httpx2.Response:
+    """Return a saved response for either client's demo request."""
     responses = Path(__file__).parent / "responses"
-    return (
-        FakeRouter()
-        .add("/data/2.5/weather", json=json.loads((responses / "current_weather.json").read_text()))
-        .add("/data/2.5/forecast", json=json.loads((responses / "forecast.json").read_text()))
-    )
+    filename = {"/data/2.5/weather": "current_weather.json", "/data/2.5/forecast": "forecast.json"}[request.url.path]
+    return httpx2.Response(200, json=json.loads((responses / filename).read_text()))
 
 
 def print_weather(weather: CurrentWeather | None, forecast: Forecast | None) -> None:
@@ -50,7 +45,7 @@ async def main_async() -> None:
         api_key="example-key",
         on_validation_error="skip",  # If a single record from the API fails validation - skip it
         validate_inputs=True,  # Check inputs before sending request
-        http_client=httpx2.AsyncClient(transport=make_router().mock_transport()),
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(mock_response)),
         owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )
 
@@ -73,7 +68,7 @@ def main_sync() -> None:
         api_key="example-key",
         on_validation_error="skip",  # If a single record from the API fails validation - skip it
         validate_inputs=True,  # Check inputs before sending request
-        http_client=httpx2.Client(transport=make_router().mock_transport()),
+        http_client=httpx2.Client(transport=httpx2.MockTransport(mock_response)),
         owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )
 

@@ -208,6 +208,19 @@ wheels = [
 ]
 
 [[package]]
+name = "httpx2-pytest"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx2" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fe/2e/66762cb820f4857a8038181ee4deb679905dbd5a1447a7e82993e1c5ddc0/httpx2_pytest-2.0.0.tar.gz", hash = "sha256:0f7e3777be96016bb070c12a64f99e0f1d9437b5b374c7ca331bc95a398cd946", size = 60492, upload-time = "2026-09-04T09:09:57.791Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/42/77/f100314adb8bc833bd224616e269c8a5feb196b0baa9f7d634d2f36c4e1e/httpx2_pytest-2.0.0-py3-none-any.whl", hash = "sha256:b8a63711bc40edc163c22268800d50e21c4266bb9571240bcd0cbfaf69c33cf6", size = 21304, upload-time = "2026-09-04T09:09:56.392Z" },
+]
+
+[[package]]
 name = "identify"
 version = "2.6.20"
 source = { registry = "https://pypi.org/simple" }
@@ -449,18 +462,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pytest-mock"
-version = "3.15.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pytest" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/68/14/eb014d26be205d38ad5ad20d9a80f7d201472e08167f0bb4361e251084a9/pytest_mock-3.15.1.tar.gz", hash = "sha256:1849a238f6f396da19762269de72cb1814ab44416fa73a8686deac10b0d87a0f", size = 34036, upload-time = "2025-09-16T16:37:27.081Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/cc/06253936f4a7fa2e0f48dfe6d851d9c56df896a9ab09ac019d70b760619c/pytest_mock-3.15.1-py3-none-any.whl", hash = "sha256:0a25e2eb88fe5168d535041d09a4529a188176ae608a6d249ee65abc0949630d", size = 10095, upload-time = "2025-09-16T16:37:25.734Z" },
-]
-
-[[package]]
 name = "pytest-randomly"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -587,14 +588,20 @@ dependencies = [
     { name = "structlog" },
 ]
 
+[package.optional-dependencies]
+testing = [
+    { name = "httpx2-pytest" },
+    { name = "pytest-asyncio" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "httpx2-pytest" },
     { name = "pre-commit" },
     { name = "pyright", extra = ["nodejs"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
     { name = "pytest-randomly" },
     { name = "pyupgrade" },
     { name = "ruff" },
@@ -604,19 +611,22 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx2", specifier = ">=2.7.0" },
+    { name = "httpx2-pytest", marker = "extra == 'testing'", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
+    { name = "pytest-asyncio", marker = "extra == 'testing'", specifier = ">=1.0.0" },
     { name = "steindamm", specifier = ">=0.11.1" },
     { name = "structlog", specifier = ">=25.1.0" },
 ]
+provides-extras = ["testing"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage" },
+    { name = "httpx2-pytest", specifier = ">=2.0.0" },
     { name = "pre-commit" },
     { name = "pyright", extras = ["nodejs"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "pytest-mock" },
     { name = "pytest-randomly" },
     { name = "pyupgrade", specifier = ">=3.21.2" },
     { name = "ruff", specifier = ">=0.14.14" },

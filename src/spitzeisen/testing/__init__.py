@@ -1,16 +1,13 @@
 """
-Test kit.
+SDK construction and cleanup for tests.
 
-Available as a pytest plugin the moment spitzeisen is installed — no conftest wiring needed.
-Import the pieces directly when a test wants to build them by hand.
+Enable `spitzeisen.testing.plugin` for factories with httpx2-pytest mocking.
+Standalone factory context managers handle resources; supply HTTP mocking separately.
 """
 
-from spitzeisen.testing.factory import MockApiConfig, MockApiFactory
-from spitzeisen.testing.transport import FakeRouter, RecordedRequest
+from spitzeisen.testing.harness import ApiFactory, SyncApiFactory
 
 __all__ = (
-    "FakeRouter",
-    "MockApiConfig",
-    "MockApiFactory",
-    "RecordedRequest",
+    "ApiFactory",
+    "SyncApiFactory",
 )
