@@ -308,8 +308,28 @@ class SpitzeisenApi:
         Yield records across pages, following the operation's pagination strategy.
 
         Stops after `max_results` records (None means every record). Each page costs one
-        limiter acquisition.
+        limiter acquisition. HTTP 404 always raises, including after records were yielded.
         """
+        async for records in self._iter_record_pages(
+            operation_spec,
+            params=params,
+            max_results=max_results,
+            headers=headers,
+            **path_params,
+        ):
+            for record in records:
+                yield record
+
+    async def _iter_record_pages(
+        self,
+        operation_spec: SpitzeisenOperationSpec,
+        *,
+        params: QueryParams | None = None,
+        max_results: int | None = None,
+        headers: Mapping[str, str] | None = None,
+        **path_params: str,
+    ) -> AsyncIterator[list[JsonObject]]:
+        """Yield each successful page's records, including empty pages, capped at `max_results`."""
         if max_results is not None and max_results < 1:
             msg = f"max_results must be >= 1, got {max_results}"
             raise ValueError(msg)
@@ -321,13 +341,12 @@ class SpitzeisenApi:
             page = await self.get_json(
                 operation_spec, not_found_ok=False, params=current, headers=headers, **path_params
             )
-            # Extract the actual content from the HTTP response and yield each individual record
             records = operation_spec.pagination.records(page)
-            for record in records:
-                yield record
-                yielded += 1
-                if max_results is not None and yielded >= max_results:
-                    return
+            batch = records if max_results is None else records[: max_results - yielded]
+            yield batch
+            yielded += len(batch)
+            if max_results is not None and yielded >= max_results:
+                return
             # The strategy decides what the next page needs, or if this was the final page returns None.
             next_params = operation_spec.pagination.next_params(page, records, current)
             if next_params is None:
@@ -371,25 +390,28 @@ class SpitzeisenApi:
         """
         Collect records across pages into a list of raw dicts, capped at `max_results`.
 
-        HTTP 404 raises unless `not_found_ok=True`, which returns None if any page is
-        missing, discarding previously collected records. A successful empty collection
-        returns an empty list. Other HTTP, JSON decoding, and response-shape errors raise.
+        HTTP 404 raises unless `not_found_ok=True` and the first requested page is missing,
+        in which case None is returned. A 404 on a later page always raises, even if earlier
+        pages were empty. A successful empty collection returns an empty list. Other HTTP,
+        JSON decoding, and response-shape errors raise.
         """
+        collected: list[JsonObject] = []
+        received_page = False
         try:
-            return [
-                record
-                async for record in self.iter_records(
-                    operation_spec,
-                    params=params,
-                    max_results=max_results,
-                    headers=headers,
-                    **path_params,
-                )
-            ]
+            async for records in self._iter_record_pages(
+                operation_spec,
+                params=params,
+                max_results=max_results,
+                headers=headers,
+                **path_params,
+            ):
+                received_page = True
+                collected.extend(records)
         except NotFoundError:
-            if not_found_ok:
+            if not_found_ok and not received_page:
                 return None
             raise
+        return collected
 
     def _resolve_validation_mode(self, override: ValidationMode | None) -> ValidationMode:
         """Resolve the effective validation mode from a per-call override and the config default."""
