@@ -13,6 +13,7 @@ repos:
         entry: uv run pyupgrade
         language: system
         types: [python]
+        exclude: ^(src/spitzeisen|examples/weather_sdk)/_sync/
         args: ["--py312-plus"]
 
       - id: ruff-check
