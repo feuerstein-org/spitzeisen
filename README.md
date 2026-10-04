@@ -1,6 +1,6 @@
 # Spitzeisen
 
-Spitzeisen (Pickaxe in German) is a Python framework for building REST API clients, with async and sync support. Spitzeisen handles HTTP requests, retries, rate limiting, and pagination. You write the endpoint methods and Pydantic models for your API. It's intended for simple data APIs e.g. financial APIs, product APIs etc.
+Spitzeisen (Pickaxe in German) is a Python framework for building REST API clients, with async and sync support. Spitzeisen handles HTTP requests, retries, rate limiting, and pagination. You write the endpoint methods and Pydantic models for your API. It's intended for simple data APIs e.g. financial APIs, product APIs etc where you want to validate the response (in this case with Pydantic) to instantly highlight bad data.
 
 This project is in Alpha, I've built this to simplify/unite the code from the various financial APIs I'm working on (e.g. [eodhd-py](https://github.com/feuerstein-org/eodhd-py) and [massive-api](https://github.com/feuerstein-org/massive-api)). Feel free to use it as a building block for your own SDKs, better documentation is currently being worked on. In the future I want to add the possibility to generate the entire SDK off of OpenAPI and Smithy models but that's just an idea for now.
 
