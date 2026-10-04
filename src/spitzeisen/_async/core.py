@@ -115,7 +115,10 @@ class SpitzeisenApi:
         **path_params: str,
     ) -> JsonValue:
         """
-        Fetch the decoded JSON body through the shared request transport.
+        Fetch and decode the entire response body as any JSON value.
+
+        Accepts any JSON value: object, array, string, number, boolean, or null,
+        and returns its decoded Python representation. Use `get_object` when the result is a JSON object.
 
         HTTP 404 raises unless `not_found_ok=True`, in which case it returns None.
         A successful JSON null also returns None regardless of this flag. Other HTTP
@@ -172,11 +175,19 @@ class SpitzeisenApi:
         **path_params: str,
     ) -> JsonObject | None:
         """
-        Fetch one response object, optionally unwrapping a vendor envelope.
+        Fetch a JSON object, optionally extracting it from a response envelope.
 
-        HTTP 404 raises unless `not_found_ok=True`, which returns None. Successful
-        nulls, other non-object values, and missing envelope keys raise ResponseShapeError.
-        Returned fields are unchanged.
+        Returns the JSON object as a Python `dict`. With `result_key=None`, the
+        response body must be a JSON object. With `result_key` set, the body must
+        be a JSON object containing that key, and the value under it must also
+        be a JSON object, that value is returned.
+        Missing keys raise ResponseShapeError.
+
+        Unlike `get_json`, arrays, scalars, and JSON null raise ResponseShapeError,
+        even when no `result_key` is provided.
+
+        HTTP 404 raises unless `not_found_ok=True`, which returns None. This flag
+        does not allow JSON null or other non-object values in successful responses.
         """
         # don't pass not_found_ok to get_json since otherwise for both 404 and empty response
         # we would return a ResponseShapeError.

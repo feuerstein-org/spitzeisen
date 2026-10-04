@@ -32,16 +32,20 @@ from spitzeisen import (
     serialize_path_param,
 )
 
+
 class Item(SpitzeisenModel):
     id: str
     name: str
 
+
 _ITEM = SpitzeisenOperationSpec(path="/item/{item_id}")
+
 
 class ItemsApi(SpitzeisenApi):
     async def get_item(self, item_id: str) -> Item:
         item = await self.get_object(_ITEM, item_id=serialize_path_param(item_id))
         return self.validate_record(item, Item, mode="raise")
+
 
 async def main():
     config = SpitzeisenConfig(
@@ -105,6 +109,7 @@ Using the `ItemsApi` class above:
 ```python
 import pytest
 from spitzeisen import SpitzeisenConfig
+
 
 @pytest.mark.asyncio
 async def test_get_item(api_factory, httpx2_mock):

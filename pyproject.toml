@@ -3,8 +3,6 @@ name = "spitzeisen"
 version = "0.1.0"
 description = "A shared async/sync core for REST API SDKs"
 readme = "README.md"
-license = "MIT"
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.12"
 authors = [{ name = "dodofarm", email = "ea01052002@gmail.com" }]
 keywords = ["api", "client", "rest", "rate-limiting", "sdk", "async"]
