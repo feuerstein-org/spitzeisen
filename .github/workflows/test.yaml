@@ -1,0 +1,45 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+env:
+  MISE_OVERRIDE_CONFIG_FILENAMES: "mise.ci.toml"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          cache: true
+      - name: Install dependencies
+        run: mise run install-ci
+      - name: Lint
+        run: mise run lint-ci
+      - name: Check the generated sync tree is not out of date
+        run: mise run check-sync-ci
+      - name: Pre-commit
+        run: mise run pre-commit-ci
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          cache: true
+      - name: Install dependencies
+        run: mise run install-ci
+      - name: Run tests
+        run: mise run test-ci

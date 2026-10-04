@@ -1,0 +1,56 @@
+[tools]
+python = "3.14"
+uv = "latest"
+
+[tasks.install]
+description = "Install all dependencies including dev dependencies"
+run = [
+    "uv sync --locked --dev",
+    "uv run pre-commit install"
+]
+
+[tasks.build-sync]
+description = "Generate the blocking surface in _sync/ from _async/ via unasync"
+run = [
+    "uv run python build_sync.py",
+    "uv run python examples/build_sync.py"
+]
+
+[tasks.check-sync]
+description = "Fail if _sync/ is stale relative to _async/"
+run = [
+    "uv run python build_sync.py --check",
+    "uv run python examples/build_sync.py --check"
+]
+
+[tasks.demo-example]
+description = "Run the weather API example against an offline fake transport"
+run = "uv run python examples/demo.py"
+
+[tasks.pre-commit]
+description = "Run pre-commit hooks on all files"
+depends = ["lint-fix"]
+run = "uv run pre-commit run --all-files"
+
+[tasks.lint]
+description = "Show all issues detected by linter"
+run = [
+    "uv run ruff check .",
+    "uv run ruff format . --check",
+]
+
+[tasks.lint-fix]
+description = "Fix all auto-fixable linting issues"
+depends = ["build-sync"]
+run = [
+    "uv run ruff check --fix .",
+    "uv run ruff format .",
+]
+
+[tasks.test]
+description = "Run tests with coverage & pre-commit"
+depends = ["pre-commit"]
+run = [
+    "uv run coverage run -m pytest",
+    "uv run coverage report --fail-under=80"
+]

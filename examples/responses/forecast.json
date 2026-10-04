@@ -1,0 +1,92 @@
+{
+  "cod": "200",
+  "message": 0,
+  "cnt": 2,
+  "list": [
+    {
+      "dt": 1787227200,
+      "main": {
+        "temp": 22.4,
+        "feels_like": 22.6,
+        "temp_min": 21.0,
+        "temp_max": 23.5,
+        "pressure": 1015,
+        "humidity": 64,
+        "sea_level": 1015,
+        "grnd_level": 1008,
+        "temp_kf": 0.0
+      },
+      "weather": [
+        {
+          "id": 800,
+          "main": "Clear",
+          "description": "clear sky",
+          "icon": "01d"
+        }
+      ],
+      "clouds": {
+        "all": 0
+      },
+      "wind": {
+        "speed": 2.3,
+        "deg": 180,
+        "gust": 3.5
+      },
+      "visibility": 10000,
+      "pop": 0.0,
+      "sys": {
+        "pod": "d"
+      },
+      "dt_txt": "2026-08-20 12:00:00"
+    },
+    {
+      "dt": 1787238000,
+      "main": {
+        "temp": 20.1,
+        "feels_like": 22.6,
+        "temp_min": 21.0,
+        "temp_max": 23.5,
+        "pressure": 1015,
+        "humidity": 70,
+        "sea_level": 1015,
+        "grnd_level": 1008,
+        "temp_kf": 0.0
+      },
+      "weather": [
+        {
+          "id": 800,
+          "main": "Clear",
+          "description": "clear sky",
+          "icon": "01d"
+        }
+      ],
+      "clouds": {
+        "all": 0
+      },
+      "wind": {
+        "speed": 2.3,
+        "deg": 180,
+        "gust": 3.5
+      },
+      "visibility": 10000,
+      "pop": 0.0,
+      "sys": {
+        "pod": "d"
+      },
+      "dt_txt": "2026-08-20 15:00:00"
+    }
+  ],
+  "city": {
+    "id": 2950159,
+    "name": "Berlin",
+    "coord": {
+      "lon": 13.405,
+      "lat": 52.52
+    },
+    "country": "DE",
+    "population": 3426354,
+    "timezone": 7200,
+    "sunrise": 1787198400,
+    "sunset": 1787248800
+  }
+}
