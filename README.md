@@ -1,167 +1,152 @@
-# spitzeisen
+# Spitzeisen (Pickaxe in German)
 
-A shared Python core for handwritten REST SDKs, with async and sync clients.
+A Python library for building REST API clients, with async and sync support. Spitzeisen handles HTTP requests, retries, rate limiting, and pagination. You write the endpoint methods and Pydantic models for your API. It's intended for simple data APIs e.g. financial APIs, product APIs etc.
 
-An SDK owns its paths, public method signatures, Pydantic models, filters, and vendor defaults.
-Spitzeisen handles HTTP client lifecycle, authentication, rate limiting, retries, pagination,
-and response validation. It knows nothing about the API's domain.
+This project is in Alpha, I've built this to simplify/unite the code from the various financial APIs I'm working on (e.g. [eodhd-py](https://github.com/feuerstein-org/eodhd-py) and [massive-api](https://github.com/feuerstein-org/massive-api)). Feel free to use it as a building block for your own SDKs, better documentation is currently being worked on. In the future I want to add the possibility to generate the entire SDK off of OpenAPI and Smithy models but that's just an idea for now.
+
+## Installation
+
+Requires Python 3.12 or newer.
 
 ```bash
 pip install spitzeisen
 ```
 
-Python 3.12 or newer is required. This is an alpha library; its public API can still change.
+The library is still in alpha, so the API may change.
 
-## A handwritten endpoint
+## Usage
+
+> Note: It is **strongly** recommended to review the example weather SDK in `examples`, the below is just a very simple showcase, it is advised to create endpoint groups within one SDK Baseclass.
+
+Here's a client for an API that returns a single item from `/item/{item_id}`:
 
 ```python
+import asyncio
+
 from spitzeisen import (
-    AsyncSpitzeisenApi,
-    AsyncSpitzeisenConfig,
-    CursorPagination,
-    QueryParamAuth,
+    BearerHeader,
+    SpitzeisenApi,
+    SpitzeisenConfig,
     SpitzeisenModel,
     SpitzeisenOperationSpec,
-    async_single_bucket,
-    resolve_page_size,
-    serialize_query_map,
+    serialize_path_param,
 )
 
-RECORDS = SpitzeisenOperationSpec(
-    path="/v1/records",
-    pagination=CursorPagination(results_key="results", next_key="next_url"),
-)
-
-
-class Record(SpitzeisenModel):
+class Item(SpitzeisenModel):
     id: str
-    name: str | None = None
+    name: str
+
+_ITEM = SpitzeisenOperationSpec(path="/item/{item_id}")
+
+class ItemsApi(SpitzeisenApi):
+    async def get_item(self, item_id: str) -> Item:
+        item = await self.get_object(_ITEM, item_id=serialize_path_param(item_id))
+        return self.validate_record(item, Item, mode="raise")
+
+async def main():
+    config = SpitzeisenConfig(
+        base_url="https://api.example.com",  # Replace with your API's URL
+        auth=BearerHeader("YOUR_API_KEY"),
+    )
+
+    async with ItemsApi(config) as api:
+        item = await api.get_item("123")
+        print(item.id, item.name)
 
 
-class AsyncRecordsApi(AsyncSpitzeisenApi):
-    async def list_records(self, *, active: bool = True, max_results: int | None = None) -> list[Record]:
-        return await self.get_models(
-            RECORDS,
-            Record,
-            params=serialize_query_map({"active": active, "limit": resolve_page_size(max_results, 1000)}),
-            max_results=max_results,
-        )
-
-
-class AsyncExampleApi(AsyncSpitzeisenApi):
-    @property
-    def records_api(self) -> AsyncRecordsApi:
-        return self.api(AsyncRecordsApi)
-
-
-config = AsyncSpitzeisenConfig(
-    base_url="https://api.example.com",
-    auth=QueryParamAuth("apiKey", "YOUR_KEY"),
-    limiter=async_single_bucket("example-account", 60, 60),
-)
-
-# Inside an async function:
-# async with AsyncExampleApi(config) as api:
-#     records = await api.records_api.list_records(max_results=100)
+asyncio.run(main())
 ```
 
-The API group is cached by class and shares the root's config, HTTP connection, and limiter.
-Groups also work independently. Closing the last context closes an owned HTTP client; a supplied
-HTTP client stays open unless ownership was explicitly transferred. Entering a context without
-making a request does not open a connection. Use context managers to ensure cleanup.
+`serialize_path_param` URL-encodes the item ID before inserting it into the path. `get_object` fetches the JSON response. `validate_record` converts it into an `Item` model. With `mode="raise"`, a response that doesn't match the model raises a Pydantic validation error.
 
-The blocking API is `SyncSpitzeisenApi` with `SyncSpitzeisenConfig` and `sync_single_bucket`.
-Its methods have the same names and arguments without `await`; `iter_records` returns an ordinary
-iterator. Spitzeisen derives its sync runtime from the async implementation using `unasync` and tests
-both surfaces. Handwritten SDKs can choose to ship async, sync, or both.
+For a sync client, subclass `SyncSpitzeisenApi` and use `SyncSpitzeisenConfig`. Write regular methods with `with` blocks and no `await`. The [weather example](examples/weather_sdk) includes both versions. It's recommended to generate the sync counterparts as much as possible using unasync, the Weather example already does this.
 
-## Shared runtime
+## Config
 
-| Concern | Public surface |
-| --- | --- |
-| API groups | `api(GroupClass)` caches a group sharing the parent config |
-| Raw JSON | `get_json`, `get_json_optional` (HTTP 404 becomes `None`) |
-| Raw collections | `iter_records`, `get_records`, `get_records_optional` |
-| Typed collections | `get_models(spec, Model, ...)`, or `validate_records(records, Model, mode)` after a raw SDK method |
-| Single models | `get_model(spec, Model, result_key="results", not_found_ok=True)` |
-| Validation | Ordinary Pydantic models, `raise`/`skip` list policy, optional `validate_input` |
-| Pagination | `NoPagination`, `PageNumber`, `CursorPagination`, or the `PaginationStrategy` protocol |
-| Auth | `BearerHeader`, `HeaderKey`, `QueryParamAuth`, `NoAuth`, or the `AuthStrategy` protocol |
-| Rate limits | Scalar cost per operation; injectable async/sync limiter; local or Redis steindamm buckets |
-| Serialization | Dates, timestamps, choices, path parameters, headers, repeated/comma-separated query values |
-| Concurrency | `gather_bounded` for async fan-out, `map_bounded` for blocking calls |
-| Tests | `FakeRouter` over httpx2's mock transport, optional pytest fixtures and operation stubs |
+Authentication, retries, timeouts, and rate limits are configured through `SpitzeisenConfig`.
+For example:
 
-`max_results` caps **raw records before validation**, matching the reference SDK. The default list
-validation mode is `skip`, so invalid rows can reduce the returned count. Set
-`on_validation_error="raise"` on the config or per `get_models` call to receive a Pydantic error
-containing all invalid row indices. HTTP failures, malformed JSON, and invalid envelopes always
-raise. Raw collection methods check envelope/record shape but do not validate model fields.
-`get_model` always validates; only an explicitly allowed HTTP 404 returns `None`.
+```python
+from spitzeisen import BearerHeader, SpitzeisenConfig, single_bucket
 
-Plain Pydantic `BaseModel` subclasses work. `SpitzeisenModel` is an optional base that ignores
-unknown fields. `Field` constraints and custom validators always apply. For deliberately optional
-constraint checking, annotate a field with `spitzeisen.models.response_constraints(...)` and set
-`strict_response_validation=True`; that setting does not alter ordinary Pydantic rules.
+config = SpitzeisenConfig(
+    base_url="https://api.example.com",
+    auth=BearerHeader("YOUR_API_KEY"),
+    limiter=single_bucket("example-account", 60, 60),  # 60 tokens, refilled over 60 seconds
+    max_retries=3,
+    request_timeout=30,
+    on_validation_error="raise",
+)
+```
 
-`CursorPagination` extracts only the cursor query value from a response's `next_url`, keeps the
-configured endpoint URL, and reapplies auth on every request. Subsequent requests drop initial
-filters unless named in `retain_params`. For a direct response token instead of a URL, use
-`CursorPagination(next_key="next_token", cursor_from_url=False)`. Missing/null continuation means
-completion; malformed tokens and repeated requests raise `ResponseShapeError`. Strategy instances
-are stateless and can be shared between concurrent calls. `PageNumber` stops on an empty page.
+Rate limiting uses [steindamm](https://github.com/feuerstein-org/steindamm).
+The bucket above starts full and refills gradually. Each request costs one token by default, including retries and page requests. Pass a Redis connection to `single_bucket` to share the limit across processes.
+Without a limiter, requests are unlimited. Sync clients use `sync_single_bucket`.
 
-Serialize path arguments explicitly with `serialize_path_param` before passing them as keyword
-arguments to JSON/collection helpers. An operation path such as `/v1/records/{record_id}` then
-receives an encoded value, preventing slashes, question marks, and fragments from changing the URL.
-For query mappings, `serialize_query_map` omits `None`, lowercases booleans, and repeats collection
-keys. Use `serialize_query_param(values, name="filter", explode=False)` for comma-separated values.
+For authentication, you can also use `HeaderKey` or `QueryParamAuth`. The default is `NoAuth`.
 
-## Other HTTP methods and response formats
+Those are by far not the only ways to authenticate which are supported. You can easily implement your own authentication strategy, same applies to for example pagination, to do that simply pass your custom strategy in the `SpitzeisenOperationSpec`, see [here](examples/inventory_sdk.py) for an example pagination strategy.
 
-`request(spec, decoder=...)` exposes the same transport for bytes, CSV, or custom decoding. The
-decoder receives a buffered httpx2 response after successful HTTP status handling. For request
-bodies, supply serialized `content: bytes` and a `Content-Type` header. GET, HEAD, OPTIONS, POST,
-PUT, PATCH, and DELETE are supported. JSON collection helpers are intended for GET operations.
+Retryable requests use exponential backoff for HTTP 429, server errors, timeouts, and connection errors. POST and PATCH requests are not retried unless you opt in with `retryable=True` on the operation.
 
-Retryable HTTP statuses are 429 and 5xx; transport retries cover timeouts and network errors.
-Delays use configurable exponential backoff and a floor. POST/PATCH are not retried by default;
-set `retryable=True` only when repeating the operation is safe. Every attempt pays the operation's
-rate-limit cost. Typed exceptions preserve HTTP error body and headers; exhausted 429 retries
-raise `MaxRetriesExceededError` with the final HTTP error as their cause. There is no automatic
-`Retry-After` handling. Request timeouts apply to both owned and supplied HTTP clients.
+Endpoint groups created with `self.api(GroupClass)` share the parent's config, HTTP connection, and rate limiter. Use context managers to close connections when you're done. A supplied HTTP client stays open unless you set `owns_http_client=True`.
 
-Spitzeisen supplies no implicit vendor allowance. SDKs or applications select the bucket name,
-capacity, and period; use a stable account-scoped name when sharing a Redis bucket. Logging uses
-structlog without configuring the host application's logging.
+## Testing
 
-## Reference SDK and development
+Install the testing helpers with `pip install "spitzeisen[testing]"`, then enable the pytest plugin in your root `conftest.py`:
 
-[The handwritten example](examples/README.md) uses the local `massive-api` design as a reference:
-API groups, typed and raw lists, cursor pagination, single lookups, and vendor-specific filters.
-It is an executable example, not a migration or replacement of that package.
-[The migration notes](docs/handwritten-sdks.md) describe the ownership boundary and remaining work
-for `massive-api`.
+```python
+pytest_plugins = ["spitzeisen.testing.plugin"]
+```
+
+`api_factory` creates and closes your client. `httpx2_mock` supplies responses without calling the real API.
+Using the `ItemsApi` class above:
+
+```python
+import pytest
+from spitzeisen import SpitzeisenConfig
+
+@pytest.mark.asyncio
+async def test_get_item(api_factory, httpx2_mock):
+    httpx2_mock.add_response(
+        url="https://api.example.com/item/123",
+        json={"id": "123", "name": "Example item"},
+    )
+    api = await api_factory.create(
+        ItemsApi,
+        config=SpitzeisenConfig(base_url="https://api.example.com"),
+    )
+
+    item = await api.get_item("123")
+    assert item.name == "Example item"
+```
+
+For sync clients, use `sync_api_factory`. See the [example tests](examples/tests) for more.
+
+## Examples
+
+- [Weather SDK](examples/weather_sdk): endpoint groups, response models, and async and sync clients.
+- [Inventory SDK](examples/inventory_sdk.py): custom pagination and record iteration.
+- [Offline demo](examples/demo.py): runs both weather clients with saved responses.
+
+To run the demo from the repository root:
 
 ```bash
 mise run install
-mise run demo-example   # offline, no credentials required
-mise run build-sync
-mise run check-sync
-mise run lint
-uv run pyright
-uv run coverage run -m pytest
-uv run coverage report --fail-under=80
+mise run demo-example
 ```
 
-An SDK can use `FakeRouter` directly or enable fixtures with
-`pytest_plugins = ["spitzeisen.testing.plugin"]` in its root `conftest.py`.
-The fixture-based operation stub factory also needs `pytest-mock`.
+The demo needs no API key or network connection.
 
-Schema-driven SDK generation is deferred. This branch has no generator CLI, Java toolchain,
-Smithy build, or codegen dependency extra. The approach and recovery points are documented in
-[Smithy for later](docs/smithy-future.md); the earlier branch and commit history preserve the work.
+## Development
 
-## License
+```bash
+mise run install
+mise run build-sync
+mise run lint
+mise run test
+```
 
-MIT
+The sync code is generated from the async code with `unasync`.
+After editing the async implementation, run `mise run build-sync` to update both the library and weather example.
+`mise run check-sync` checks that the generated files are up to date.
