@@ -44,7 +44,6 @@ async def main_async() -> None:
     config = WeatherApiConfig(
         api_key="example-key",
         on_validation_error="skip",  # If a single record from the API fails validation - skip it
-        validate_inputs=True,  # Check inputs before sending request
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(mock_response)),
         owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )
@@ -67,7 +66,6 @@ def main_sync() -> None:
     config = SyncWeatherApiConfig(
         api_key="example-key",
         on_validation_error="skip",  # If a single record from the API fails validation - skip it
-        validate_inputs=True,  # Check inputs before sending request
         http_client=httpx2.Client(transport=httpx2.MockTransport(mock_response)),
         owns_http_client=True,  # Spitzeisen owns it and will close it when no longer needed
     )

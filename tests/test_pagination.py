@@ -77,10 +77,16 @@ def test_direct_tokens_keep_selected_parameters_without_reencoding() -> None:
     assert isinstance(strategy, PaginationStrategy)
 
 
+@pytest.mark.parametrize("cursor_from_url", [True, False])
+@pytest.mark.parametrize("page", [{"results": []}, {"results": [], "next_url": None}, {"results": [], "next_url": ""}])
+def test_missing_null_or_empty_continuation_stops(page: JsonObject, cursor_from_url: bool) -> None:
+    """A page without a continuation token ends the collection, as Smithy's client steps require."""
+    assert CursorPagination(cursor_from_url=cursor_from_url).next_params(page, [], []) is None
+
+
 @pytest.mark.parametrize(
     "continuation",
     [
-        "",
         7,
         False,
         [],

@@ -48,7 +48,7 @@ async def test_async_factory_preserves_config_and_rejects_reuse(httpx2_mock: HTT
         auth=BearerHeader("secret"),
         limiter=limiter,
         max_retries=4,
-        validate_inputs=True,
+        validate_inputs=False,
         on_validation_error="raise",
     )
     async with ApiFactory() as factory:
@@ -60,7 +60,7 @@ async def test_async_factory_preserves_config_and_rejects_reuse(httpx2_mock: HTT
         assert client.config is config
         assert config.limiter is limiter
         assert config.max_retries == 4
-        assert config.validate_inputs
+        assert not config.validate_inputs
         assert config.on_validation_error == "raise"
         assert not config.owns_http_client
         http = config.http_client
@@ -106,7 +106,7 @@ def test_sync_factory_preserves_config_and_rejects_reuse(httpx2_mock: HTTPXMock)
         auth=BearerHeader("secret"),
         limiter=limiter,
         max_retries=4,
-        validate_inputs=True,
+        validate_inputs=False,
         on_validation_error="raise",
     )
     with SyncApiFactory() as factory:
@@ -118,7 +118,7 @@ def test_sync_factory_preserves_config_and_rejects_reuse(httpx2_mock: HTTPXMock)
         assert client.config is config
         assert config.limiter is limiter
         assert config.max_retries == 4
-        assert config.validate_inputs
+        assert not config.validate_inputs
         assert config.on_validation_error == "raise"
         assert not config.owns_http_client
         http = config.http_client

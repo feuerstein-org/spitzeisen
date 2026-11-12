@@ -183,7 +183,7 @@ class CursorPagination:
     e.g. something like `type=brown`, some APIs encode those params in the `cursor_param`
     already and it's not required.
 
-    A missing or null next value stops pagination. An empty page with a cursor continues.
+    A missing, null, or empty next value stops pagination. An empty page with a cursor continues.
     Invalid cursors or a cursor matching the current request raise ``ResponseShapeError``.
     """
 
@@ -215,15 +215,15 @@ class CursorPagination:
         return extract_records(page, self.results_key)
 
     def next_params(self, page: JsonValue, records: list[JsonObject], params: QueryParams) -> QueryParams | None:
-        """Return a cursor request, or finish when the continuation is absent or null."""
+        """Return a cursor request, or finish when the continuation is absent, null, or empty."""
         if not isinstance(page, dict):
             msg = f"expected an object carrying {self.next_key!r}, got {_describe(page)}"
             raise ResponseShapeError(msg)
         continuation = page.get(self.next_key)
-        if continuation is None:
+        if continuation is None or continuation == "":
             return None
-        if not isinstance(continuation, str) or not continuation:
-            msg = f"expected a non-empty string under {self.next_key!r}"
+        if not isinstance(continuation, str):
+            msg = f"expected a string under {self.next_key!r}"
             raise ResponseShapeError(msg)
         cursor = self._cursor_from_url(continuation) if self.cursor_from_url else continuation
         if any(item.name == self.cursor_param and item.value == cursor for item in params):

@@ -39,7 +39,7 @@ class WeatherApiConfig(SyncSpitzeisenConfig):
             context using this configuration exits. Defaults to False for supplied clients,
             clients created by the SDK are always owned by it.
         validate_inputs: Enables strict Pydantic checking through core's `validate_input`
-            helper. Defaults to False.
+            helper. Defaults to True.
 
     Raises:
         pydantic.ValidationError: If a configuration field has an invalid value, such as

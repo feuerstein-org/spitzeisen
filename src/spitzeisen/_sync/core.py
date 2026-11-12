@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import time
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, overload
 
@@ -32,6 +33,7 @@ from spitzeisen.exceptions import (
     TransportError,
     http_error_from_status,
 )
+from spitzeisen.models import UnknownEnumCounts, ValidationContext
 from spitzeisen.params import QueryParams, SerializedQueryParam
 
 if TYPE_CHECKING:
@@ -54,6 +56,12 @@ def _list_adapter(model: type[BaseModel]) -> TypeAdapter[list[Any]]:
 def _input_adapter(annotation: Any) -> TypeAdapter[Any]:
     """Build and cache the adapter used by opt-in strict input validation."""
     return TypeAdapter(annotation)
+
+
+def _log_unknown_enums(model: type[BaseModel], counts: UnknownEnumCounts) -> None:
+    """Log one warning per new enum value, with how many kept records carry it."""
+    for (field, value), count in counts.items():
+        logger.warning("unknown_enum_value", model=model.__name__, field=field, value=value, count=count)
 
 
 def _is_retryable(status: int) -> bool:
@@ -430,8 +438,12 @@ class SpitzeisenApi:
             raise ValueError(msg)
         return mode
 
+    def _validation_context(self) -> ValidationContext:
+        """Give `UnknownValue` fields this client's setting and a fresh counter for one validation."""
+        return ValidationContext(allow_unknown_enums=self.config.allow_unknown_enums)
+
     def validate_input[InputT](self, value: InputT, annotation: Any) -> InputT:
-        """Validate supplied values while allowing None for backwards compatibility."""
+        """Validate a supplied value unless `validate_inputs` is off. None means omitted and always passes."""
         if value is None or not self.config.validate_inputs:
             return value
         return cast("InputT", _input_adapter(annotation).validate_python(value, strict=True))
@@ -453,16 +465,29 @@ class SpitzeisenApi:
         Validate one raw object, including nested fields, into a Pydantic model.
 
         `mode=None` uses the config's policy. "raise" propagates `ValidationError`,
-        "skip" logs the error and returns None.
+        "skip" logs the error and returns None. A kept record logs one warning per new enum value.
         """
         mode = self._resolve_validation_mode(mode)
+        counts: UnknownEnumCounts = Counter()
+        parsed = self._validate_record(record, model, mode, counts)
+        _log_unknown_enums(model, counts)
+        return parsed
+
+    # NOTE: This is used by validate_records to allow counting how many unknown enums occurred.
+    def _validate_record[ModelT: BaseModel](
+        self, record: JsonObject, model: type[ModelT], mode: ValidationMode, counts: UnknownEnumCounts
+    ) -> ModelT | None:
+        """Validate one record, adding its new enum values to `counts` only when it is kept."""
+        context = self._validation_context()
         try:
-            return model.model_validate(record)
+            parsed = model.model_validate(record, context=context)
         except ValidationError as exc:
             if mode == "raise":
                 raise
             logger.warning("dropping_invalid_record", model=model.__name__, errors=exc.errors())
             return None
+        counts.update(context.unknown_enums)
+        return parsed
 
     def validate_records[ModelT: BaseModel](
         self,
@@ -476,21 +501,24 @@ class SpitzeisenApi:
         `mode=None` uses the config's policy. With mode "raise", an invalid record raises
         `pydantic.ValidationError` aggregating every bad row by index. With mode "skip",
         we first try the same path as for "raise" but on failure we rerun the validation
-        this time with individual items and log the failing ones.
+        this time with individual items and log the failing ones. Each call logs one warning
+        per new enum value among the kept records, with a count.
         """
         mode = self._resolve_validation_mode(mode)
-        adapter = _list_adapter(model)
-        if mode == "raise":
-            return cast("list[ModelT]", adapter.validate_python(records))
+        context = self._validation_context()
+        counts = context.unknown_enums
         try:
-            return cast("list[ModelT]", adapter.validate_python(records))
+            validated = cast("list[ModelT]", _list_adapter(model).validate_python(records, context=context))
         except ValidationError:
-            validated: list[ModelT] = []
-            for record in records:
-                parsed = self.validate_record(record, model, mode="skip")
-                if parsed is not None:
-                    validated.append(parsed)
-            return validated
+            if mode == "raise":
+                raise
+            # above we also counted records that may now be dropped, so start the count over.
+            counts.clear()
+            # Now validate each record individually
+            parsed = [self._validate_record(record, model, "skip", counts) for record in records]
+            validated = [item for item in parsed if item is not None]
+        _log_unknown_enums(model, counts)
+        return validated
 
 
 def _error_of(response: Response) -> HTTPError:

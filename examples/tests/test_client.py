@@ -40,7 +40,6 @@ def test_sync_forecast(sync_weather: SyncWeatherApi, httpx2_mock: HTTPXMock, for
 
 async def test_invalid_units_never_reach_http(weather: WeatherApi, httpx2_mock: HTTPXMock) -> None:
     """No request is made when input validation fails."""
-    weather.config.validate_inputs = True
     with pytest.raises(ValidationError, match="literal_error"):
         await weather.current_weather_api.get_current_weather(
             latitude=52.52,

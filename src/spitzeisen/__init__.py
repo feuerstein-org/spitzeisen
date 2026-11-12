@@ -37,7 +37,7 @@ from spitzeisen.limits import (
     single_bucket,
     sync_single_bucket,
 )
-from spitzeisen.models import SpitzeisenModel
+from spitzeisen.models import SpitzeisenModel, UnknownValue
 from spitzeisen.operations import SpitzeisenOperationSpec
 from spitzeisen.pagination import (
     CursorPagination,
@@ -93,6 +93,7 @@ __all__ = (
     "SyncSpitzeisenApi",
     "SyncSpitzeisenConfig",
     "TransportError",
+    "UnknownValue",
     "ValidationMode",
     "build_header_params",
     "extract_records",

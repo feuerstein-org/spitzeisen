@@ -12,6 +12,7 @@ from spitzeisen import (
     SpitzeisenModel,
     SyncSpitzeisenApi,
     SyncSpitzeisenConfig,
+    UnknownValue,
     ValidationMode,
 )
 
@@ -85,14 +86,102 @@ def api(request: pytest.FixtureRequest) -> SpitzeisenApi | SyncSpitzeisenApi:
     return SyncSpitzeisenApi(SyncSpitzeisenConfig(base_url="https://test.example"))
 
 
-def test_validate_input_is_optional_and_strict(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
-    """Enabled input validation rejects coercion while allowing omitted values."""
-    assert api.validate_input("1.5", float) == "1.5"
-    api.config.validate_inputs = True
+def test_validate_input_is_strict_by_default_and_can_be_disabled(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
+    """Input validation rejects coercion and allows omitted values until the config turns it off."""
     assert api.validate_input(1.5, float) == 1.5
     assert api.validate_input(None, float) is None
     with pytest.raises(ValidationError):
         api.validate_input("1.5", float)
+    api.config.validate_inputs = False
+    assert api.validate_input("1.5", float) == "1.5"
+
+
+class OpenEnumModel(SpitzeisenModel):
+    """A response model that can keep enum values the SDK does not know yet."""
+
+    kind: Literal["a", "b"] | UnknownValue
+
+
+def test_disallowing_unknown_enums_follows_the_validation_policy(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
+    """With allow_unknown_enums off, a new value follows the raise or skip policy like any bad field."""
+    api.config.allow_unknown_enums = False
+    with pytest.raises(ValidationError, match="allow_unknown_enums"):
+        api.validate_record({"kind": "c"}, OpenEnumModel, mode="raise")
+    with pytest.raises(ValidationError, match="allow_unknown_enums"):
+        api.validate_records([{"kind": "c"}], OpenEnumModel, mode="raise")
+    assert api.validate_record({"kind": "c"}, OpenEnumModel, mode="skip") is None
+    kept = api.validate_records([{"kind": "a"}, {"kind": "c"}], OpenEnumModel, mode="skip")
+    assert [item.kind for item in kept] == ["a"]
+
+
+def test_unknown_enum_value_is_kept_and_logged_by_default(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
+    """A new string becomes an UnknownValue holding what the API sent, and known values stay plain."""
+    with capture_logs() as known_logs:
+        known = api.validate_record({"kind": "a"}, OpenEnumModel, mode="raise")
+    with capture_logs() as unknown_logs:
+        unknown = api.validate_record({"kind": "c"}, OpenEnumModel, mode="raise")
+    listed = api.validate_records([{"kind": "a"}, {"kind": "c"}, {"kind": 5}], OpenEnumModel, mode="skip")
+
+    # Confirm nothing was logged
+    assert not known_logs
+    assert unknown_logs == [
+        {
+            "event": "unknown_enum_value",
+            "log_level": "warning",
+            "model": "OpenEnumModel",
+            "field": "kind",
+            "value": "c",
+            "count": 1,
+        }
+    ]
+    assert type(known.kind) is str
+    assert isinstance(unknown.kind, UnknownValue)
+    assert unknown.kind == "c"
+    assert unknown.model_dump() == {"kind": "c"}
+    assert unknown.model_dump_json() == '{"kind":"c"}'
+    assert [item.kind for item in listed] == ["a", "c"]
+
+
+class OpenEnumWithIdModel(OpenEnumModel):
+    """A response model where a record with a new enum value can still fail on another field."""
+
+    id: int
+
+
+def test_unknown_enum_values_log_one_line_per_call_with_a_count(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
+    """Every call reports each new value once with a count, including after the skip fallback's second pass."""
+    valid: list[JsonObject] = [{"kind": "c"}, {"kind": "c"}, {"kind": "d"}]
+
+    with capture_logs() as logs:
+        api.validate_records(valid, OpenEnumModel, mode="raise")
+        api.validate_records([*valid, {"kind": 5}], OpenEnumModel, mode="skip")
+
+    counts = [(log["value"], log["count"]) for log in logs if log["event"] == "unknown_enum_value"]
+
+    # Logged twice since we validated twice
+    assert counts == [("c", 2), ("d", 1), ("c", 2), ("d", 1)]
+
+
+def test_dropped_records_do_not_count_as_unknown_enum_values(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:
+    """Only records the caller receives count, in both the single-record and list paths."""
+    kept: JsonObject = {"kind": "c", "id": 1}
+    dropped: JsonObject = {"kind": "c", "id": "bad"}
+
+    with capture_logs() as logs:
+        api.validate_record(dropped, OpenEnumWithIdModel, mode="skip")
+        api.validate_records([kept, dropped], OpenEnumWithIdModel, mode="skip")
+
+    counts = [(log["value"], log["count"]) for log in logs if log["event"] == "unknown_enum_value"]
+    assert counts == [("c", 1)]
+
+
+def test_unknown_value_is_rejected_outside_a_client() -> None:
+    """Without a client there is no setting to read, so a new value fails."""
+    with pytest.raises(ValidationError, match="on the client"):
+        OpenEnumModel.model_validate({"kind": "c"})
+    with pytest.raises(ValidationError, match="on the client"):
+        OpenEnumModel.model_validate({"kind": "c"}, context={"tenant": "acme"})
+    assert OpenEnumModel.model_validate({"kind": "a"}).kind == "a"
 
 
 def test_response_models_accept_additions_and_parse_nested_values(api: SpitzeisenApi | SyncSpitzeisenApi) -> None:

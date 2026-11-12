@@ -93,6 +93,12 @@ Those are by far not the only ways to authenticate which are supported. You can 
 
 Retryable requests use exponential backoff for HTTP 429, server errors, timeouts, and connection errors. POST and PATCH requests are not retried unless you opt in with `retryable=True` on the operation.
 
+Arguments passed to `validate_input` are checked with Pydantic strict mode before the request is sent, so a bad value fails without using a rate limit token. Set `validate_inputs=False` to turn this off, for example to send an enum value your SDK doesn't know yet.
+
+Response models can type an enum field as `Literal[...] | UnknownValue`. A value outside the `Literal` is then kept as an `UnknownValue`, a `str` subclass holding what the API sent. Each validation call logs one warning per new value, with a count. Set `allow_unknown_enums=False` to make it fail validation instead.
+
+See [Validation](docs/validation.md) for every mode and how the settings combine.
+
 Endpoint groups created with `self.api(GroupClass)` share the parent's config, HTTP connection, and rate limiter. Use context managers to close connections when you're done. A supplied HTTP client stays open unless you set `owns_http_client=True`.
 
 ## Testing
@@ -142,6 +148,10 @@ mise run demo-example
 ```
 
 The demo needs no API key or network connection.
+
+## Smithy
+
+Spitzeisen differs from the Smithy client rules in several places, mostly by failing earlier. See [Deviations from Smithy](docs/smithy.md) for each difference and how to follow Smithy instead.
 
 ## Development
 

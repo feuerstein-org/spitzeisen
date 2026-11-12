@@ -35,8 +35,11 @@ class SpitzeisenConfig(BaseModel):
             "raise" propagates `pydantic.ValidationError`; "skip" logs failures and returns
             None for one invalid record or drops invalid records from a list.
         validate_inputs: Validate non-None arguments passed to ``validate_input`` with Pydantic strict mode before
-            serialization. Off by default so Python-compatible values retain the permissive SDK
-            behavior, enable it when boundary validation is more important than coercion.
+            serialization, so a bad argument fails before it uses a rate limit token. On by default. Disable it
+            to send values the SDK does not know yet, such as a new vendor enum value. See docs/smithy.md.
+        allow_unknown_enums: Keep enum values the SDK does not know yet in response fields typed
+            `Literal[...] | UnknownValue`, and log a warning. Disable it to make such a value fail
+            validation and follow `on_validation_error`. See docs/smithy.md.
         http_client: The httpx2 client for this surface. Supply one when custom transport
             behaviour is required, otherwise Spitzeisen creates and owns it lazily.
         owns_http_client: Whether Spitzeisen closes `http_client` automatically. Set for a client
@@ -54,7 +57,8 @@ class SpitzeisenConfig(BaseModel):
     retry_backoff_base: float = Field(default=1.0, ge=0)
     retry_backoff_floor: float = Field(default=1.0, ge=0)
     on_validation_error: ValidationMode = "skip"
-    validate_inputs: bool = False
+    validate_inputs: bool = True
+    allow_unknown_enums: bool = True
 
     http_client: Client | None = None
     owns_http_client: bool = False
